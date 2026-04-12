@@ -18,9 +18,12 @@ File-management-System/
 |   |-- admin.py
 |   |-- forms.py
 |   |-- migrations/
+|   |-- management/
 |   |-- models.py
+|   |-- services.py
 |   |-- tests.py
 |   |-- urls.py
+|   |-- utils.py
 |   |-- validators.py
 |   `-- views.py
 |-- dms_project/
@@ -56,7 +59,7 @@ File-management-System/
 - Role-based access by department scope
 - Automatic OCR processing for PDF and image uploads with status tracking
 - JSON API for document list and detail access
-- PostgreSQL-aware full-text ranking when PostgreSQL is enabled
+- Materialized PostgreSQL full-text search index when PostgreSQL is enabled
 - SQLite fallback for local development
 
 ## Document Model
@@ -72,6 +75,7 @@ The `Document` model includes:
 - `unit`
 - `tags`
 - `ocr_text`
+- `search_vector` - PostgreSQL materialized full-text index field
 - `ocr_status`
 - `ocr_error`
 - `uploaded_by`
@@ -184,11 +188,29 @@ python manage.py reprocess_ocr --status failed --status skipped
 python manage.py reprocess_ocr --document-id <uuid> --force
 ```
 
+## Search Index Maintenance
+
+PostgreSQL installs a `tsvector` search column, trigger, and GIN index through migrations. The trigger keeps the index text current when document titles, descriptions, or OCR text change.
+
+Rebuild the materialized search vectors after bulk imports or manual database updates:
+
+```bash
+python manage.py rebuild_search_index
+```
+
+Limit a rebuild when needed:
+
+```bash
+python manage.py rebuild_search_index --batch-size 500
+python manage.py rebuild_search_index --document-id <uuid>
+```
+
 ## Notes on Scale
 
 - Documents are listed with pagination to keep response times steady.
 - Querysets use `select_related` for uploader and organizational data to reduce extra queries.
-- PostgreSQL search uses weighted full-text ranking when available.
+- PostgreSQL search uses a materialized weighted `tsvector` column with a GIN index for fast OCR-backed searches.
+- SQLite development mode falls back to direct text filtering so the project remains easy to run locally.
 - Database indexes are added on title, created time, uploader plus created time, department/unit plus created time, OCR status plus created time, and document type plus created time.
 
 ## Access Rules

@@ -226,6 +226,9 @@ def _serialize_document(document, request, *, include_body=False):
                 'ocr_error': document.ocr_error,
             }
         )
+    rank = getattr(document, 'rank', None)
+    if rank is not None:
+        payload['search_rank'] = float(rank)
     return payload
 
 

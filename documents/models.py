@@ -3,10 +3,10 @@ import uuid
 from pathlib import Path
 
 from django.conf import settings
-from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
+from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector, SearchVectorField
 from django.core.exceptions import ValidationError
 from django.db import connection, models
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils.text import get_valid_filename
 
 from accounts.models import Department, Unit
@@ -22,6 +22,16 @@ DOC_TYPE_CHOICES = [
     ('memo', 'Memo'),
     ('other', 'Other'),
 ]
+
+SEARCH_CONFIG = 'simple'
+
+
+def document_search_vector():
+    return (
+        SearchVector('title', weight='A', config=SEARCH_CONFIG) +
+        SearchVector('description', weight='B', config=SEARCH_CONFIG) +
+        SearchVector('ocr_text', weight='C', config=SEARCH_CONFIG)
+    )
 
 
 class OCRStatus(models.TextChoices):
@@ -67,15 +77,10 @@ class DocumentQuerySet(models.QuerySet):
             return self
 
         if connection.vendor == 'postgresql':
-            vector = (
-                SearchVector('title', weight='A') +
-                SearchVector('description', weight='B') +
-                SearchVector('ocr_text', weight='C')
-            )
-            query = SearchQuery(cleaned_term)
+            query = SearchQuery(cleaned_term, config=SEARCH_CONFIG, search_type='websearch')
             return (
-                self.annotate(rank=SearchRank(vector, query))
-                .filter(rank__gt=0)
+                self.annotate(rank=SearchRank(F('search_vector'), query))
+                .filter(search_vector=query)
                 .order_by('-rank', '-created_at')
             )
 
@@ -109,6 +114,7 @@ class Document(models.Model):
     file = models.FileField(upload_to=document_upload_path, validators=[validate_document_file])
     document_type = models.CharField(max_length=20, choices=DOC_TYPE_CHOICES, default='other')
     ocr_text = models.TextField(blank=True)
+    search_vector = SearchVectorField(null=True, editable=False)
     ocr_status = models.CharField(
         max_length=20,
         choices=OCRStatus.choices,

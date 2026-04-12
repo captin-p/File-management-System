@@ -3,6 +3,8 @@ __pycache__/
 *.log
 db.sqlite3
 media/
+test-media-*/
+.test_media/
 staticfiles/
 .env
 .vscode/

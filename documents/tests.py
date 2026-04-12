@@ -1,5 +1,4 @@
 import shutil
-import tempfile
 from pathlib import Path
 from io import StringIO
 from unittest.mock import patch
@@ -15,7 +14,8 @@ from accounts.models import Company, Department, Unit
 from .models import Document, OCRStatus, Tag
 
 User = get_user_model()
-TEST_MEDIA_ROOT = Path(tempfile.mkdtemp())
+TEST_MEDIA_ROOT = Path(__file__).resolve().parent.parent / '.test_media'
+TEST_MEDIA_ROOT.mkdir(exist_ok=True)
 
 
 @override_settings(
@@ -366,3 +366,10 @@ class DocumentAccessTest(TestCase):
         processed_ids = {str(call.args[0].pk) for call in process_document_ocr_mock.call_args_list}
         self.assertEqual(processed_ids, {str(self.payroll_doc.pk), str(self.audit_doc.pk)})
         self.assertIn('Processed 2 document(s). completed=2', stdout.getvalue())
+
+    def test_rebuild_search_index_skips_sqlite_fallback(self):
+        stdout = StringIO()
+
+        call_command('rebuild_search_index', stdout=stdout)
+
+        self.assertIn('Search index rebuild skipped', stdout.getvalue())
