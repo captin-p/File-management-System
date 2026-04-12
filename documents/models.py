@@ -14,6 +14,16 @@ from accounts.models import Department, Unit
 from .validators import validate_document_file
 
 
+DOC_TYPE_CHOICES = [
+    ('invoice', 'Invoice'),
+    ('report', 'Report'),
+    ('contract', 'Contract'),
+    ('policy', 'Policy'),
+    ('memo', 'Memo'),
+    ('other', 'Other'),
+]
+
+
 class OCRStatus(models.TextChoices):
     PENDING = 'pending', 'Pending'
     COMPLETED = 'completed', 'Completed'
@@ -30,7 +40,7 @@ def document_upload_path(instance, filename):
 
 class DocumentQuerySet(models.QuerySet):
     def for_list(self):
-        return self.select_related('uploaded_by', 'department', 'unit').only(
+        return self.select_related('uploaded_by', 'department', 'unit').prefetch_related('tags').only(
             'id',
             'title',
             'description',
@@ -38,6 +48,7 @@ class DocumentQuerySet(models.QuerySet):
             'created_at',
             'updated_at',
             'ocr_status',
+            'document_type',
             'department__name',
             'unit__name',
             'department_id',
@@ -75,11 +86,28 @@ class DocumentQuerySet(models.QuerySet):
         ).order_by('-created_at')
 
 
+class Tag(models.Model):
+    name = models.CharField(max_length=64, unique=True)
+
+    class Meta:
+        ordering = ['name']
+        verbose_name = 'Tag'
+        verbose_name_plural = 'Tags'
+
+    def __str__(self):
+        return self.name
+
+    def save(self, *args, **kwargs):
+        self.name = self.name.strip().lower()
+        super().save(*args, **kwargs)
+
+
 class Document(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     file = models.FileField(upload_to=document_upload_path, validators=[validate_document_file])
+    document_type = models.CharField(max_length=20, choices=DOC_TYPE_CHOICES, default='other')
     ocr_text = models.TextField(blank=True)
     ocr_status = models.CharField(
         max_length=20,
@@ -106,6 +134,7 @@ class Document(models.Model):
         on_delete=models.PROTECT,
         related_name='documents',
     )
+    tags = models.ManyToManyField(Tag, blank=True, related_name='documents')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -120,6 +149,7 @@ class Document(models.Model):
             models.Index(fields=['department', 'created_at']),
             models.Index(fields=['unit', 'created_at']),
             models.Index(fields=['ocr_status', 'created_at']),
+            models.Index(fields=['document_type', 'created_at']),
         ]
         verbose_name = 'Document'
         verbose_name_plural = 'Documents'

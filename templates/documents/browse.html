@@ -1,9 +1,16 @@
 {% extends 'base.html' %}
 {% block content %}
-<h1>Archive Browser</h1>
-<div class="row">
-    <div class="col-md-3">
-        <div class="card mb-3">
+<div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-4">
+    <div>
+        <h1 class="h2 mb-1">Archive browser</h1>
+        <p class="text-muted mb-0">Navigate by department, year, and document type when the archive gets too large for plain search.</p>
+    </div>
+    <a href="{% url 'documents:document_list' %}" class="btn btn-outline-primary">Open list search</a>
+</div>
+
+<div class="row g-4">
+    <div class="col-md-4 col-lg-3">
+        <div class="card shadow-sm h-100">
             <div class="card-header">Departments</div>
             <ul class="list-group list-group-flush">
                 {% for dept in departments %}
@@ -16,8 +23,8 @@
             </ul>
         </div>
     </div>
-    <div class="col-md-3">
-        <div class="card mb-3">
+    <div class="col-md-4 col-lg-3">
+        <div class="card shadow-sm h-100">
             <div class="card-header">Years</div>
             <ul class="list-group list-group-flush">
                 {% for year in years %}
@@ -30,39 +37,70 @@
             </ul>
         </div>
     </div>
-    <div class="col-md-3">
-        <div class="card mb-3">
-            <div class="card-header">Document Types</div>
+    <div class="col-md-4 col-lg-3">
+        <div class="card shadow-sm h-100">
+            <div class="card-header">Document types</div>
             <ul class="list-group list-group-flush">
-                {% for doc_type in types %}
+                {% for doc_type, doc_type_label in types %}
                     <li class="list-group-item {% if selected_type == doc_type %}active{% endif %}">
-                        <a class="text-decoration-none {% if selected_type == doc_type %}text-white{% endif %}" href="{% url 'documents:browse_folder_type' selected_department.slug selected_year doc_type %}">{{ doc_type }}</a>
+                        <a class="text-decoration-none {% if selected_type == doc_type %}text-white{% endif %}" href="{% url 'documents:browse_folder_type' selected_department.slug selected_year doc_type %}">{{ doc_type_label }}</a>
                     </li>
                 {% empty %}
-                    <li class="list-group-item">Select a year to view types.</li>
+                    <li class="list-group-item">Select a year to view document types.</li>
                 {% endfor %}
             </ul>
         </div>
     </div>
 </div>
+
 {% if folder_docs is not None %}
-    <h2>Documents</h2>
+    <div class="d-flex justify-content-between align-items-center mt-4 mb-3">
+        <h2 class="h4 mb-0">Documents{% if selected_type_label %}: {{ selected_type_label }}{% endif %}</h2>
+    </div>
     {% if folder_docs %}
-        <table class="table table-hover">
-            <thead>
-                <tr><th>Title</th><th>Type</th><th>Uploaded</th><th>Actions</th></tr>
-            </thead>
-            <tbody>
-                {% for document in folder_docs %}
-                    <tr>
-                        <td><a href="{% url 'documents:document_detail' document.pk %}">{{ document.title }}</a></td>
-                        <td>{{ document.document_type }}</td>
-                        <td>{{ document.upload_date|date:'Y-m-d' }}</td>
-                        <td><a class="btn btn-sm btn-secondary" href="{% url 'documents:edit_document' document.pk %}">Edit</a></td>
-                    </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+        <div class="card shadow-sm">
+            <div class="table-responsive">
+                <table class="table table-hover align-middle mb-0">
+                    <thead>
+                        <tr><th>Title</th><th>Tags</th><th>OCR</th><th>Created</th><th>Actions</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for document in folder_docs %}
+                            <tr>
+                                <td><a href="{% url 'documents:document_detail' document.pk %}">{{ document.title }}</a></td>
+                                <td>{{ document.tags.all|join:', '|default:'-' }}</td>
+                                <td>{{ document.get_ocr_status_display }}</td>
+                                <td>{{ document.created_at|date:'Y-m-d H:i' }}</td>
+                                <td><a class="btn btn-sm btn-outline-secondary" href="{% url 'documents:edit_document' document.pk %}">Edit</a></td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% if page_obj and page_obj.paginator.num_pages > 1 %}
+            <nav class="mt-4" aria-label="Archive pagination">
+                <ul class="pagination mb-0">
+                    {% if page_obj.has_previous %}
+                        <li class="page-item">
+                            <a class="page-link" href="?page={{ page_obj.previous_page_number }}">Previous</a>
+                        </li>
+                    {% else %}
+                        <li class="page-item disabled"><span class="page-link">Previous</span></li>
+                    {% endif %}
+                    <li class="page-item disabled">
+                        <span class="page-link">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
+                    </li>
+                    {% if page_obj.has_next %}
+                        <li class="page-item">
+                            <a class="page-link" href="?page={{ page_obj.next_page_number }}">Next</a>
+                        </li>
+                    {% else %}
+                        <li class="page-item disabled"><span class="page-link">Next</span></li>
+                    {% endif %}
+                </ul>
+            </nav>
+        {% endif %}
     {% else %}
         <div class="alert alert-secondary">No documents found for this path.</div>
     {% endif %}

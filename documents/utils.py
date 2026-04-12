@@ -1,3 +1,5 @@
+from django.core.paginator import Paginator
+
 from accounts.models import Department, Unit
 
 from .models import Document
@@ -106,3 +108,43 @@ def user_can_edit_document(user, document):
 
 def user_can_delete_document(user, document):
     return deletable_documents_for_user(user, Document.objects.filter(pk=document.pk)).exists()
+
+
+def normalize_tag_names(raw_tags):
+    if not raw_tags:
+        return []
+    if isinstance(raw_tags, str):
+        values = raw_tags.split(',')
+    else:
+        values = raw_tags
+    return [value.strip().lower() for value in values if value and value.strip()]
+
+
+def apply_document_filters(queryset, *, query=None, department=None, unit=None, ocr_status=None, document_type=None, tags=None):
+    if query:
+        queryset = queryset.search(query)
+    if department:
+        queryset = queryset.filter(department=department)
+    if unit:
+        queryset = queryset.filter(unit=unit)
+    if ocr_status:
+        queryset = queryset.filter(ocr_status=ocr_status)
+    if document_type:
+        queryset = queryset.filter(document_type=document_type)
+    normalized_tags = normalize_tag_names(tags)
+    if normalized_tags:
+        for tag_name in normalized_tags:
+            queryset = queryset.filter(tags__name=tag_name)
+        queryset = queryset.distinct()
+    return queryset
+
+
+def paginate_queryset(queryset, *, page_number=1, page_size=20, max_page_size=100):
+    try:
+        safe_page_size = int(page_size)
+    except (TypeError, ValueError):
+        safe_page_size = 20
+    safe_page_size = max(1, min(safe_page_size, max_page_size))
+    paginator = Paginator(queryset, safe_page_size)
+    page_obj = paginator.get_page(page_number)
+    return paginator, page_obj, safe_page_size

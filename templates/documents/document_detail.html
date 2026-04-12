@@ -32,10 +32,20 @@
                 <dl class="row mb-0">
                     <dt class="col-sm-5">Document ID</dt>
                     <dd class="col-sm-7 text-break">{{ document.id }}</dd>
+                    <dt class="col-sm-5">Type</dt>
+                    <dd class="col-sm-7">{{ document.get_document_type_display }}</dd>
                     <dt class="col-sm-5">Department</dt>
                     <dd class="col-sm-7">{{ document.department|default:'-' }}</dd>
                     <dt class="col-sm-5">Unit</dt>
                     <dd class="col-sm-7">{{ document.unit|default:'-' }}</dd>
+                    <dt class="col-sm-5">Tags</dt>
+                    <dd class="col-sm-7">
+                        {% if document.tags.all %}
+                            {{ document.tags.all|join:', ' }}
+                        {% else %}
+                            -
+                        {% endif %}
+                    </dd>
                     <dt class="col-sm-5">OCR</dt>
                     <dd class="col-sm-7">{{ document.get_ocr_status_display }}</dd>
                     <dt class="col-sm-5">Created</dt>

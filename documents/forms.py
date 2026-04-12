@@ -2,10 +2,11 @@ from django import forms
 
 from accounts.models import Department, Unit
 
-from .models import Document
+from .models import DOC_TYPE_CHOICES, Document, OCRStatus, Tag
 from .utils import (
     available_departments_for_user,
     available_units_for_user,
+    normalize_tag_names,
     user_can_assign_department,
     user_can_assign_unit,
 )
@@ -81,24 +82,65 @@ class OrganizationScopedFormMixin(BootstrapFormMixin):
 
 
 class DocumentUploadForm(OrganizationScopedFormMixin, forms.ModelForm):
+    tags = forms.CharField(
+        required=False,
+        help_text='Comma-separated tags',
+        widget=forms.TextInput(attrs={'placeholder': 'finance, q1, payroll'}),
+    )
+
     class Meta:
         model = Document
-        fields = ['title', 'description', 'department', 'unit', 'file']
+        fields = ['title', 'description', 'document_type', 'department', 'unit', 'file', 'tags']
         widgets = {
             'title': forms.TextInput(attrs={'placeholder': 'Quarterly finance report'}),
             'description': forms.Textarea(attrs={'rows': 4, 'placeholder': 'Add a helpful summary for search and review.'}),
+            'document_type': forms.Select(choices=DOC_TYPE_CHOICES),
             'file': forms.ClearableFileInput(attrs={'accept': '.pdf,.png,.jpg,.jpeg,.tif,.tiff'}),
         }
 
+    def clean_tags(self):
+        return normalize_tag_names(self.cleaned_data.get('tags'))
+
+    def save(self, commit=True):
+        document = super().save(commit=False)
+        if commit:
+            document.save()
+            tags = [Tag.objects.get_or_create(name=name)[0] for name in self.cleaned_data.get('tags', [])]
+            document.tags.set(tags)
+        return document
+
 
 class DocumentMetadataForm(OrganizationScopedFormMixin, forms.ModelForm):
+    tags = forms.CharField(
+        required=False,
+        help_text='Comma-separated tags',
+        widget=forms.TextInput(attrs={'placeholder': 'finance, q1, payroll'}),
+    )
+
     class Meta:
         model = Document
-        fields = ['title', 'description', 'department', 'unit']
+        fields = ['title', 'description', 'document_type', 'department', 'unit', 'tags']
         widgets = {
             'title': forms.TextInput(attrs={'placeholder': 'Quarterly finance report'}),
             'description': forms.Textarea(attrs={'rows': 4}),
+            'document_type': forms.Select(choices=DOC_TYPE_CHOICES),
         }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance.pk:
+            self.fields['tags'].initial = ', '.join(self.instance.tags.values_list('name', flat=True))
+
+    def clean_tags(self):
+        return normalize_tag_names(self.cleaned_data.get('tags'))
+
+    def save(self, commit=True):
+        document = super().save(commit=False)
+        if commit:
+            document.save()
+            tags = [Tag.objects.get_or_create(name=name)[0] for name in self.cleaned_data.get('tags', [])]
+            document.tags.set(tags)
+        return document
 
 
 class DocumentSearchForm(BootstrapFormMixin, forms.Form):
@@ -109,6 +151,21 @@ class DocumentSearchForm(BootstrapFormMixin, forms.Form):
     )
     department = forms.ModelChoiceField(queryset=Department.objects.none(), required=False)
     unit = forms.ModelChoiceField(queryset=Unit.objects.none(), required=False)
+    document_type = forms.ChoiceField(
+        choices=[('', 'All document types')] + list(DOC_TYPE_CHOICES),
+        required=False,
+        label='Document type',
+    )
+    tags = forms.CharField(
+        required=False,
+        label='Tags',
+        widget=forms.TextInput(attrs={'placeholder': 'finance, q1'}),
+    )
+    ocr_status = forms.ChoiceField(
+        choices=[('', 'All OCR statuses')] + list(OCRStatus.choices),
+        required=False,
+        label='OCR status',
+    )
 
     def __init__(self, *args, user=None, **kwargs):
         self.user = user

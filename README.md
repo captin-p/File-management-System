@@ -48,11 +48,14 @@ File-management-System/
 - UUID-based `Document` model
 - Upload PDF and image files up to 10 MB
 - Department and optional unit ownership for each document
+- Document type and tag metadata for faceted search
 - Local file storage under `media/documents/`
 - Paginated document list for responsive browsing
+- Archive browser by department, year, and document type
 - Search by title, description, and OCR text
 - Role-based access by department scope
 - Automatic OCR processing for PDF and image uploads with status tracking
+- JSON API for document list and detail access
 - PostgreSQL-aware full-text ranking when PostgreSQL is enabled
 - SQLite fallback for local development
 
@@ -64,8 +67,10 @@ The `Document` model includes:
 - `title`
 - `description`
 - `file`
+- `document_type`
 - `department`
 - `unit`
+- `tags`
 - `ocr_text`
 - `ocr_status`
 - `ocr_error`
@@ -146,12 +151,45 @@ python manage.py test
 python manage.py check
 ```
 
+## API Endpoints
+
+- `GET /api/documents/`
+- `GET /api/documents/<uuid>/`
+
+Supported list query parameters:
+
+- `q`
+- `tags`
+- `document_type`
+- `department`
+- `unit`
+- `ocr_status`
+- `page`
+- `page_size`
+
+The API uses the same access scope as the HTML interface.
+
+## OCR Maintenance
+
+Re-run OCR for documents that are pending, failed, or skipped:
+
+```bash
+python manage.py reprocess_ocr
+```
+
+Target specific statuses or documents:
+
+```bash
+python manage.py reprocess_ocr --status failed --status skipped
+python manage.py reprocess_ocr --document-id <uuid> --force
+```
+
 ## Notes on Scale
 
 - Documents are listed with pagination to keep response times steady.
 - Querysets use `select_related` for uploader and organizational data to reduce extra queries.
 - PostgreSQL search uses weighted full-text ranking when available.
-- Database indexes are added on title, created time, uploader plus created time, department/unit plus created time, and OCR status plus created time.
+- Database indexes are added on title, created time, uploader plus created time, department/unit plus created time, OCR status plus created time, and document type plus created time.
 
 ## Access Rules
 

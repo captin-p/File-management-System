@@ -1,16 +1,18 @@
 import shutil
 import tempfile
 from pathlib import Path
+from io import StringIO
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
 from accounts.models import Company, Department, Unit
 
-from .models import Document, OCRStatus
+from .models import Document, OCRStatus, Tag
 
 User = get_user_model()
 TEST_MEDIA_ROOT = Path(tempfile.mkdtemp())
@@ -78,29 +80,41 @@ class DocumentAccessTest(TestCase):
             uploaded_by=self.staff,
             department=self.finance,
             unit=self.payroll,
+            document_type='report',
+            tags=['payroll', 'finance'],
         )
         self.audit_doc = self._create_document(
             title='Audit Notes',
             uploaded_by=self.teammate,
             department=self.finance,
             unit=self.audit,
+            document_type='memo',
+            tags=['audit'],
         )
         self.legal_doc = self._create_document(
             title='Vendor Contract',
             uploaded_by=self.outsider,
             department=self.legal,
             unit=self.contracts,
+            document_type='contract',
+            tags=['vendor', 'legal'],
         )
 
-    def _create_document(self, title, uploaded_by, department, unit):
-        return Document.objects.create(
+    def _create_document(self, title, uploaded_by, department, unit, document_type='other', tags=None):
+        document = Document.objects.create(
             title=title,
             description=f'{title} description',
+            document_type=document_type,
             uploaded_by=uploaded_by,
             department=department,
             unit=unit,
             file=SimpleUploadedFile(f'{title.lower().replace(" ", "-")}.pdf', b'%PDF-1.4 sample', content_type='application/pdf'),
         )
+        if tags:
+            for tag in tags:
+                tag_obj, _ = Tag.objects.get_or_create(name=tag)
+                document.tags.add(tag_obj)
+        return document
 
     def test_dashboard_requires_login(self):
         response = self.client.get(reverse('documents:dashboard'))
@@ -151,6 +165,8 @@ class DocumentAccessTest(TestCase):
             {
                 'title': 'Payroll Register Revised',
                 'description': self.payroll_doc.description,
+                'document_type': 'policy',
+                'tags': 'payroll, revised',
                 'department': self.finance.pk,
                 'unit': self.payroll.pk,
             },
@@ -160,6 +176,8 @@ class DocumentAccessTest(TestCase):
         self.assertRedirects(own_response, reverse('documents:document_detail', args=[self.payroll_doc.pk]))
         self.payroll_doc.refresh_from_db()
         self.assertEqual(self.payroll_doc.title, 'Payroll Register Revised')
+        self.assertEqual(self.payroll_doc.document_type, 'policy')
+        self.assertEqual(sorted(self.payroll_doc.tags.values_list('name', flat=True)), ['payroll', 'revised'])
         self.assertEqual(teammate_response.status_code, 404)
 
     def test_manager_can_delete_department_document(self):
@@ -188,6 +206,45 @@ class DocumentAccessTest(TestCase):
         self.assertContains(response, 'Vendor Contract')
         self.assertNotContains(response, 'Payroll Register')
 
+    def test_admin_can_filter_document_list_by_tag_and_type(self):
+        self.client.login(username='admin', password='secret123')
+
+        response = self.client.get(
+            reverse('documents:document_list'),
+            {'tags': 'payroll', 'document_type': 'report'},
+        )
+
+        self.assertContains(response, 'Payroll Register')
+        self.assertNotContains(response, 'Audit Notes')
+        self.assertNotContains(response, 'Vendor Contract')
+
+    def test_document_api_list_returns_paginated_json(self):
+        self.client.login(username='admin', password='secret123')
+        self.payroll_doc.ocr_status = OCRStatus.COMPLETED
+        self.payroll_doc.ocr_text = 'payroll values'
+        self.payroll_doc.save(update_fields=['ocr_status', 'ocr_text', 'updated_at'])
+
+        response = self.client.get(
+            reverse('documents:document_api_list'),
+            {'page_size': 1, 'ocr_status': OCRStatus.COMPLETED},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['count'], 1)
+        self.assertEqual(payload['page_size'], 1)
+        self.assertEqual(payload['results'][0]['title'], 'Payroll Register')
+        self.assertEqual(payload['results'][0]['ocr_status'], OCRStatus.COMPLETED)
+        self.assertEqual(payload['results'][0]['document_type'], 'report')
+        self.assertEqual(payload['results'][0]['tags'], ['finance', 'payroll'])
+
+    def test_document_api_detail_respects_scope(self):
+        self.client.login(username='manager', password='secret123')
+
+        response = self.client.get(reverse('documents:document_api_detail', args=[self.legal_doc.pk]))
+
+        self.assertEqual(response.status_code, 404)
+
     def test_search_matches_ocr_text(self):
         self.client.login(username='admin', password='secret123')
         self.payroll_doc.ocr_text = 'confidential payroll totals for april'
@@ -197,6 +254,19 @@ class DocumentAccessTest(TestCase):
         response = self.client.get(reverse('documents:document_list'), {'q': 'confidential'})
 
         self.assertContains(response, 'Payroll Register')
+        self.assertNotContains(response, 'Vendor Contract')
+
+    def test_archive_browser_filters_by_department_year_and_type(self):
+        self.client.login(username='admin', password='secret123')
+        year = self.payroll_doc.created_at.year
+
+        response = self.client.get(
+            reverse('documents:browse_folder_type', args=[self.finance.slug, year, 'report'])
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Payroll Register')
+        self.assertNotContains(response, 'Audit Notes')
         self.assertNotContains(response, 'Vendor Contract')
 
     def test_document_list_is_paginated(self):
@@ -233,6 +303,8 @@ class DocumentAccessTest(TestCase):
             {
                 'title': 'Scanned Invoice',
                 'description': 'OCR test',
+                'document_type': 'invoice',
+                'tags': 'invoices, accounts',
                 'department': self.finance.pk,
                 'unit': self.payroll.pk,
                 'file': SimpleUploadedFile('invoice.pdf', b'%PDF-1.4 sample', content_type='application/pdf'),
@@ -243,6 +315,8 @@ class DocumentAccessTest(TestCase):
         document = Document.objects.get(title='Scanned Invoice')
         self.assertEqual(document.ocr_status, OCRStatus.COMPLETED)
         self.assertEqual(document.ocr_text, 'scanned invoice number 42')
+        self.assertEqual(document.document_type, 'invoice')
+        self.assertEqual(sorted(document.tags.values_list('name', flat=True)), ['accounts', 'invoices'])
         self.assertContains(response, 'OCR text was extracted and added to search.')
 
     def test_upload_rejects_files_over_ten_megabytes(self):
@@ -258,6 +332,8 @@ class DocumentAccessTest(TestCase):
             {
                 'title': 'Too Large',
                 'description': 'This should fail',
+                'document_type': 'other',
+                'tags': '',
                 'department': self.finance.pk,
                 'unit': self.payroll.pk,
                 'file': oversized_file,
@@ -266,3 +342,27 @@ class DocumentAccessTest(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'File size must not exceed 10 MB.')
+
+    @patch('documents.management.commands.reprocess_ocr.process_document_ocr')
+    def test_reprocess_ocr_command_filters_documents(self, process_document_ocr_mock):
+        self.payroll_doc.ocr_status = OCRStatus.FAILED
+        self.payroll_doc.save(update_fields=['ocr_status', 'updated_at'])
+        self.audit_doc.ocr_status = OCRStatus.SKIPPED
+        self.audit_doc.save(update_fields=['ocr_status', 'updated_at'])
+        self.legal_doc.ocr_status = OCRStatus.COMPLETED
+        self.legal_doc.save(update_fields=['ocr_status', 'updated_at'])
+
+        def fake_process(document):
+            document.ocr_status = OCRStatus.COMPLETED
+            document.save(update_fields=['ocr_status', 'updated_at'])
+            return OCRStatus.COMPLETED
+
+        process_document_ocr_mock.side_effect = fake_process
+
+        stdout = StringIO()
+        call_command('reprocess_ocr', '--status', OCRStatus.FAILED, '--status', OCRStatus.SKIPPED, stdout=stdout)
+
+        self.assertEqual(process_document_ocr_mock.call_count, 2)
+        processed_ids = {str(call.args[0].pk) for call in process_document_ocr_mock.call_args_list}
+        self.assertEqual(processed_ids, {str(self.payroll_doc.pk), str(self.audit_doc.pk)})
+        self.assertIn('Processed 2 document(s). completed=2', stdout.getvalue())

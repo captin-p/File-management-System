@@ -11,11 +11,19 @@
 <div class="card shadow-sm mb-4">
     <div class="card-body">
         <form method="get" class="row g-3 align-items-end">
-            <div class="col-md-6">
+            <div class="col-md-4">
                 <label for="{{ form.q.id_for_label }}" class="form-label">{{ form.q.label }}</label>
                 {{ form.q }}
             </div>
-            <div class="col-md-3">
+            <div class="col-md-2">
+                <label for="{{ form.tags.id_for_label }}" class="form-label">{{ form.tags.label }}</label>
+                {{ form.tags }}
+            </div>
+            <div class="col-md-2">
+                <label for="{{ form.document_type.id_for_label }}" class="form-label">{{ form.document_type.label }}</label>
+                {{ form.document_type }}
+            </div>
+            <div class="col-md-2">
                 <label for="{{ form.department.id_for_label }}" class="form-label">{{ form.department.label }}</label>
                 {{ form.department }}
             </div>
@@ -23,7 +31,11 @@
                 <label for="{{ form.unit.id_for_label }}" class="form-label">{{ form.unit.label }}</label>
                 {{ form.unit }}
             </div>
-            <div class="col-md-1 d-grid">
+            <div class="col-md-2">
+                <label for="{{ form.ocr_status.id_for_label }}" class="form-label">{{ form.ocr_status.label }}</label>
+                {{ form.ocr_status }}
+            </div>
+            <div class="col-md-12 d-grid d-md-flex justify-content-md-end">
                 <button class="btn btn-primary">Search</button>
             </div>
         </form>
@@ -36,6 +48,7 @@
             <thead>
                 <tr>
                     <th>Title</th>
+                    <th>Type</th>
                     <th>Department</th>
                     <th>Unit</th>
                     <th>OCR</th>
@@ -54,6 +67,7 @@
                             <div class="small text-muted mt-1">{{ document.description|truncatechars:120 }}</div>
                         {% endif %}
                     </td>
+                    <td>{{ document.get_document_type_display }}</td>
                     <td>{{ document.department|default:'-' }}</td>
                     <td>{{ document.unit|default:'-' }}</td>
                     <td>
@@ -82,7 +96,7 @@
                     </td>
                 </tr>
             {% empty %}
-                <tr><td colspan="8" class="text-center py-4">No documents found.</td></tr>
+                <tr><td colspan="9" class="text-center py-4">No documents found.</td></tr>
             {% endfor %}
             </tbody>
         </table>
@@ -94,7 +108,7 @@
         <ul class="pagination mb-0">
             {% if page_obj.has_previous %}
                 <li class="page-item">
-                    <a class="page-link" href="?q={{ search_query }}&department={{ selected_department_id }}&unit={{ selected_unit_id }}&page={{ page_obj.previous_page_number }}">Previous</a>
+                    <a class="page-link" href="?q={{ search_query }}&tags={{ selected_tags }}&document_type={{ selected_document_type }}&department={{ selected_department_id }}&unit={{ selected_unit_id }}&ocr_status={{ selected_ocr_status }}&page={{ page_obj.previous_page_number }}">Previous</a>
                 </li>
             {% else %}
                 <li class="page-item disabled"><span class="page-link">Previous</span></li>
@@ -106,7 +120,7 @@
 
             {% if page_obj.has_next %}
                 <li class="page-item">
-                    <a class="page-link" href="?q={{ search_query }}&department={{ selected_department_id }}&unit={{ selected_unit_id }}&page={{ page_obj.next_page_number }}">Next</a>
+                    <a class="page-link" href="?q={{ search_query }}&tags={{ selected_tags }}&document_type={{ selected_document_type }}&department={{ selected_department_id }}&unit={{ selected_unit_id }}&ocr_status={{ selected_ocr_status }}&page={{ page_obj.next_page_number }}">Next</a>
                 </li>
             {% else %}
                 <li class="page-item disabled"><span class="page-link">Next</span></li>
