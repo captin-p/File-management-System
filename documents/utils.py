@@ -1,5 +1,69 @@
-from django.db.models import Q
+from accounts.models import Department, Unit
+
 from .models import Document
+
+
+def available_departments_for_user(user):
+    queryset = Department.objects.select_related('company').order_by('company__name', 'name')
+    if user.is_superuser or user.is_admin():
+        return queryset
+    if user.department_id:
+        return queryset.filter(pk=user.department_id)
+    return queryset.none()
+
+
+def available_units_for_user(user, department=None):
+    queryset = Unit.objects.select_related('department', 'department__company').order_by(
+        'department__company__name',
+        'department__name',
+        'name',
+    )
+
+    if department is not None:
+        queryset = queryset.filter(department=department)
+
+    if user.is_superuser or user.is_admin():
+        return queryset
+
+    if not user.department_id:
+        return queryset.none()
+
+    queryset = queryset.filter(department_id=user.department_id)
+    if user.is_manager():
+        return queryset
+
+    if user.unit_id:
+        return queryset.filter(pk=user.unit_id)
+
+    return queryset.none()
+
+
+def user_can_upload_documents(user):
+    return user.is_authenticated and (
+        user.is_superuser or user.is_admin() or user.department_id is not None
+    )
+
+
+def user_can_assign_department(user, department):
+    if department is None:
+        return False
+    if user.is_superuser or user.is_admin():
+        return True
+    return department.pk == user.department_id
+
+
+def user_can_assign_unit(user, unit):
+    if unit is None:
+        return True
+    if user.is_superuser or user.is_admin():
+        return True
+    if not user.department_id or unit.department_id != user.department_id:
+        return False
+    if user.is_manager():
+        return True
+    if user.unit_id:
+        return unit.pk == user.unit_id
+    return False
 
 
 def filter_documents_for_user(user, queryset=None):
@@ -7,48 +71,38 @@ def filter_documents_for_user(user, queryset=None):
         queryset = Document.objects.all()
     if user.is_superuser or user.is_admin():
         return queryset
-    if user.department:
-        return queryset.filter(department=user.department)
+    if user.department_id:
+        return queryset.filter(department_id=user.department_id)
+    return queryset.none()
+
+
+def editable_documents_for_user(user, queryset=None):
+    queryset = filter_documents_for_user(user, queryset)
+    if user.is_superuser or user.is_admin():
+        return queryset
+    if user.is_manager():
+        return queryset
+    if user.is_staff_role():
+        return queryset.filter(uploaded_by=user)
+    return queryset.none()
+
+
+def deletable_documents_for_user(user, queryset=None):
+    queryset = filter_documents_for_user(user, queryset)
+    if user.is_superuser or user.is_admin():
+        return queryset
+    if user.is_manager():
+        return queryset
     return queryset.none()
 
 
 def user_can_view_document(user, document):
-    if user.is_superuser or user.is_admin():
-        return True
-    if not document.department or not user.department:
-        return False
-    return user.department == document.department
+    return filter_documents_for_user(user, Document.objects.filter(pk=document.pk)).exists()
 
 
 def user_can_edit_document(user, document):
-    if user.is_superuser or user.is_admin():
-        return True
-    if not user.department or not document.department:
-        return False
-    if document.department != user.department:
-        return False
-    if user.is_manager():
-        return True
-    if user.is_staff_role():
-        return document.created_by_id == user.id
-    return False
+    return editable_documents_for_user(user, Document.objects.filter(pk=document.pk)).exists()
 
 
 def user_can_delete_document(user, document):
-    if user.is_superuser or user.is_admin():
-        return True
-    if not user.department or not document.department:
-        return False
-    return user.is_manager() and document.department == user.department
-
-
-def build_browse_hierarchy(user):
-    documents = filter_documents_for_user(user)
-    hierarchy = {}
-    for document in documents.select_related('department'):
-        department_name = document.department.name if document.department else 'Unassigned'
-        department_slug = document.department.slug if document.department else 'unassigned'
-        year = document.upload_date.year
-        doc_type = document.document_type
-        hierarchy.setdefault((department_name, department_slug), {}).setdefault(year, set()).add(doc_type)
-    return hierarchy
+    return deletable_documents_for_user(user, Document.objects.filter(pk=document.pk)).exists()

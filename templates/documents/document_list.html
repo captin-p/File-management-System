@@ -1,33 +1,117 @@
 {% extends 'base.html' %}
 {% block content %}
-<h1>Document Archive</h1>
-<form method="get" class="row g-3 mb-4">
-    <div class="col-md-3">{{ form.query.label_tag }}{{ form.query }}</div>
-    <div class="col-md-2">{{ form.tags.label_tag }}{{ form.tags }}</div>
-    <div class="col-md-2">{{ form.department.label_tag }}{{ form.department }}</div>
-    <div class="col-md-2">{{ form.unit.label_tag }}{{ form.unit }}</div>
-    <div class="col-md-2">{{ form.document_type.label_tag }}{{ form.document_type }}</div>
-    <div class="col-md-1">{{ form.date_from.label_tag }}{{ form.date_from }}</div>
-    <div class="col-md-1">{{ form.date_to.label_tag }}{{ form.date_to }}</div>
-    <div class="col-md-1 align-self-end"><button class="btn btn-primary">Search</button></div>
-</form>
-<table class="table table-bordered table-hover">
-    <thead><tr><th>Title</th><th>Department</th><th>Type</th><th>Uploaded</th><th>Actions</th></tr></thead>
-    <tbody>
-    {% for document in documents %}
-        <tr>
-            <td><a href="/documents/{{ document.pk }}/">{{ document.title }}</a></td>
-            <td>{{ document.department }}</td>
-            <td>{{ document.document_type }}</td>
-            <td>{{ document.upload_date|date:'Y-m-d' }}</td>
-            <td>
-                <a class="btn btn-sm btn-secondary" href="/documents/{{ document.pk }}/edit/">Edit</a>
-                <a class="btn btn-sm btn-danger" href="/documents/{{ document.pk }}/delete/">Delete</a>
-            </td>
-        </tr>
-    {% empty %}
-        <tr><td colspan="5">No documents match the current filters.</td></tr>
-    {% endfor %}
-    </tbody>
-</table>
+<div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-4">
+    <div>
+        <h1 class="h2 mb-1">Documents</h1>
+        <p class="text-muted mb-0">Searchable archive with paginated results and stored OCR text.</p>
+    </div>
+    <a href="{% url 'documents:upload_document' %}" class="btn btn-primary">Upload document</a>
+</div>
+
+<div class="card shadow-sm mb-4">
+    <div class="card-body">
+        <form method="get" class="row g-3 align-items-end">
+            <div class="col-md-6">
+                <label for="{{ form.q.id_for_label }}" class="form-label">{{ form.q.label }}</label>
+                {{ form.q }}
+            </div>
+            <div class="col-md-3">
+                <label for="{{ form.department.id_for_label }}" class="form-label">{{ form.department.label }}</label>
+                {{ form.department }}
+            </div>
+            <div class="col-md-2">
+                <label for="{{ form.unit.id_for_label }}" class="form-label">{{ form.unit.label }}</label>
+                {{ form.unit }}
+            </div>
+            <div class="col-md-1 d-grid">
+                <button class="btn btn-primary">Search</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="card shadow-sm">
+    <div class="table-responsive">
+        <table class="table table-hover align-middle mb-0">
+            <thead>
+                <tr>
+                    <th>Title</th>
+                    <th>Department</th>
+                    <th>Unit</th>
+                    <th>OCR</th>
+                    <th>Uploaded by</th>
+                    <th>Created</th>
+                    <th>Updated</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for document in documents %}
+                <tr>
+                    <td>
+                        <a href="{% url 'documents:document_detail' document.pk %}" class="fw-semibold text-decoration-none">{{ document.title }}</a>
+                        {% if document.description %}
+                            <div class="small text-muted mt-1">{{ document.description|truncatechars:120 }}</div>
+                        {% endif %}
+                    </td>
+                    <td>{{ document.department|default:'-' }}</td>
+                    <td>{{ document.unit|default:'-' }}</td>
+                    <td>
+                        {% if document.ocr_status == 'completed' %}
+                            <span class="badge text-bg-success">Ready</span>
+                        {% elif document.ocr_status == 'failed' %}
+                            <span class="badge text-bg-danger">Failed</span>
+                        {% elif document.ocr_status == 'skipped' %}
+                            <span class="badge text-bg-secondary">Skipped</span>
+                        {% else %}
+                            <span class="badge text-bg-warning">Pending</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ document.uploaded_by }}</td>
+                    <td>{{ document.created_at|date:'Y-m-d H:i' }}</td>
+                    <td>{{ document.updated_at|date:'Y-m-d H:i' }}</td>
+                    <td>
+                        <div class="d-flex flex-wrap gap-2">
+                            {% if user.is_superuser or user.is_admin or user.is_manager or document.uploaded_by_id == user.id %}
+                                <a href="{% url 'documents:edit_document' document.pk %}" class="btn btn-sm btn-outline-secondary">Edit</a>
+                            {% endif %}
+                            {% if user.is_superuser or user.is_admin or user.is_manager %}
+                                <a href="{% url 'documents:delete_document' document.pk %}" class="btn btn-sm btn-outline-danger">Delete</a>
+                            {% endif %}
+                        </div>
+                    </td>
+                </tr>
+            {% empty %}
+                <tr><td colspan="8" class="text-center py-4">No documents found.</td></tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+{% if is_paginated %}
+    <nav class="mt-4" aria-label="Document pagination">
+        <ul class="pagination mb-0">
+            {% if page_obj.has_previous %}
+                <li class="page-item">
+                    <a class="page-link" href="?q={{ search_query }}&department={{ selected_department_id }}&unit={{ selected_unit_id }}&page={{ page_obj.previous_page_number }}">Previous</a>
+                </li>
+            {% else %}
+                <li class="page-item disabled"><span class="page-link">Previous</span></li>
+            {% endif %}
+
+            <li class="page-item disabled">
+                <span class="page-link">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
+            </li>
+
+            {% if page_obj.has_next %}
+                <li class="page-item">
+                    <a class="page-link" href="?q={{ search_query }}&department={{ selected_department_id }}&unit={{ selected_unit_id }}&page={{ page_obj.next_page_number }}">Next</a>
+                </li>
+            {% else %}
+                <li class="page-item disabled"><span class="page-link">Next</span></li>
+            {% endif %}
+        </ul>
+    </nav>
+{% endif %}
 {% endblock %}

@@ -2,3 +2,15 @@
 body {
     background-color: #f8f9fa;
 }
+
+.table td,
+.table th {
+    vertical-align: middle;
+}
+
+.document-pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 24rem;
+    overflow: auto;
+}

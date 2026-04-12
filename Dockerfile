@@ -5,7 +5,6 @@ ENV PYTHONUNBUFFERED 1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
-    libtesseract-dev \
     poppler-utils \
     build-essential \
     && rm -rf /var/lib/apt/lists/*

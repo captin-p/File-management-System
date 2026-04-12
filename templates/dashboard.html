@@ -1,39 +1,83 @@
 {% extends 'base.html' %}
 {% block content %}
-<h1>Dashboard</h1>
-<div class="row gy-3">
+<div class="d-flex flex-column flex-md-row align-items-md-center justify-content-between gap-3 mb-4">
+    <div>
+        <h1 class="h2 mb-1">Dashboard</h1>
+        <p class="text-muted mb-0">Fast access to recent uploads and searchable document records.</p>
+    </div>
+    <a href="{% url 'documents:upload_document' %}" class="btn btn-primary">Upload document</a>
+</div>
+
+<div class="row g-3 mb-4">
     <div class="col-md-4">
-        <div class="card shadow-sm">
+        <div class="card h-100 shadow-sm">
             <div class="card-body">
-                <h5 class="card-title">Documents</h5>
-                <p class="card-text">{{ document_count }}</p>
-                <a href="/documents/" class="btn btn-primary">Browse documents</a>
+                <p class="text-muted mb-2">Total documents</p>
+                <div class="display-6">{{ document_count }}</div>
             </div>
         </div>
     </div>
     <div class="col-md-4">
-        <div class="card shadow-sm">
+        <div class="card h-100 shadow-sm">
             <div class="card-body">
-                <h5 class="card-title">Departments</h5>
-                <p class="card-text">{{ departments|length }}</p>
+                <p class="text-muted mb-2">My uploads</p>
+                <div class="display-6">{{ my_document_count }}</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card h-100 shadow-sm">
+            <div class="card-body">
+                <p class="text-muted mb-2">Scope</p>
+                <div class="fw-semibold">{{ scope_department|default:'All departments' }}</div>
+                <div class="small text-muted">{{ scope_unit|default:'All units in scope' }}</div>
             </div>
         </div>
     </div>
 </div>
-<h2 class="mt-4">Recent documents</h2>
-<table class="table table-hover">
-    <thead><tr><th>Title</th><th>Department</th><th>Type</th><th>Uploaded</th></tr></thead>
-    <tbody>
-    {% for document in recent_documents %}
-        <tr>
-            <td><a href="/documents/{{ document.pk }}/">{{ document.title }}</a></td>
-            <td>{{ document.department }}</td>
-            <td>{{ document.document_type }}</td>
-            <td>{{ document.upload_date|date:'Y-m-d H:i' }}</td>
-        </tr>
-    {% empty %}
-        <tr><td colspan="4">No documents available.</td></tr>
-    {% endfor %}
-    </tbody>
-</table>
+
+<div class="row g-4">
+    <div class="col-lg-8">
+        <h2 class="h4 mb-3">Recent documents</h2>
+        <div class="card shadow-sm">
+            <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead>
+                        <tr>
+                            <th>Title</th>
+                            <th>Uploaded by</th>
+                            <th>Created</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    {% for document in recent_documents %}
+                        <tr>
+                            <td><a href="{% url 'documents:document_detail' document.pk %}">{{ document.title }}</a></td>
+                            <td>{{ document.uploaded_by }}</td>
+                            <td>{{ document.created_at|date:'Y-m-d H:i' }}</td>
+                        </tr>
+                    {% empty %}
+                        <tr><td colspan="3" class="text-center py-4">No documents uploaded yet.</td></tr>
+                    {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-4">
+        <h2 class="h4 mb-3">Top uploaders</h2>
+        <div class="card shadow-sm">
+            <ul class="list-group list-group-flush">
+                {% for uploader in top_uploaders %}
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        <span>{{ uploader.uploaded_by__username|default:'Unknown' }}</span>
+                        <span class="badge text-bg-dark rounded-pill">{{ uploader.total }}</span>
+                    </li>
+                {% empty %}
+                    <li class="list-group-item">No uploads yet.</li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+</div>
 {% endblock %}

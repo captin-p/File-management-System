@@ -1,17 +1,65 @@
 {% extends 'base.html' %}
 {% block content %}
-<h1>{{ document.title }}</h1>
-<div class="mb-3">
-    <strong>Type:</strong> {{ document.document_type }}<br>
-    <strong>Department:</strong> {{ document.department }}<br>
-    <strong>Unit:</strong> {{ document.unit }}<br>
-    <strong>Uploaded:</strong> {{ document.upload_date|date:'Y-m-d H:i' }}<br>
-    <strong>Tags:</strong> {{ document.tags.all|join:', ' }}
+<div class="d-flex flex-column flex-md-row justify-content-between align-items-md-start gap-3 mb-4">
+    <div>
+        <h1 class="h2 mb-1">{{ document.title }}</h1>
+        <p class="text-muted mb-0">Uploaded by {{ document.uploaded_by }} on {{ document.created_at|date:'Y-m-d H:i' }}</p>
+    </div>
+    <div class="d-flex flex-wrap gap-2">
+        <a class="btn btn-outline-primary" href="{% url 'documents:document_list' %}">Back to documents</a>
+        {% if can_edit %}
+            <a class="btn btn-outline-secondary" href="{% url 'documents:edit_document' document.pk %}">Edit</a>
+        {% endif %}
+        {% if can_delete %}
+            <a class="btn btn-outline-danger" href="{% url 'documents:delete_document' document.pk %}">Delete</a>
+        {% endif %}
+    </div>
 </div>
-<div class="mb-3"><strong>Description</strong><p>{{ document.description }}</p></div>
-<div class="mb-3"><strong>OCR Text</strong><pre>{{ document.ocr_text }}</pre></div>
-<div class="mb-3">
-    <a class="btn btn-primary" href="{{ document.file.url }}">Download file</a>
-    <a class="btn btn-secondary" href="/documents/{{ document.pk }}/edit/">Edit metadata</a>
+
+<div class="row g-4">
+    <div class="col-lg-8">
+        <div class="card shadow-sm">
+            <div class="card-body">
+                <h2 class="h5">Description</h2>
+                <p class="mb-0">{{ document.description|default:'No description provided.' }}</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-4">
+        <div class="card shadow-sm">
+            <div class="card-body">
+                <h2 class="h5">Metadata</h2>
+                <dl class="row mb-0">
+                    <dt class="col-sm-5">Document ID</dt>
+                    <dd class="col-sm-7 text-break">{{ document.id }}</dd>
+                    <dt class="col-sm-5">Department</dt>
+                    <dd class="col-sm-7">{{ document.department|default:'-' }}</dd>
+                    <dt class="col-sm-5">Unit</dt>
+                    <dd class="col-sm-7">{{ document.unit|default:'-' }}</dd>
+                    <dt class="col-sm-5">OCR</dt>
+                    <dd class="col-sm-7">{{ document.get_ocr_status_display }}</dd>
+                    <dt class="col-sm-5">Created</dt>
+                    <dd class="col-sm-7">{{ document.created_at|date:'Y-m-d H:i' }}</dd>
+                    <dt class="col-sm-5">Updated</dt>
+                    <dd class="col-sm-7">{{ document.updated_at|date:'Y-m-d H:i' }}</dd>
+                    <dt class="col-sm-5">File</dt>
+                    <dd class="col-sm-7"><a href="{{ document.file.url }}">Download</a></dd>
+                </dl>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card shadow-sm mt-4">
+    <div class="card-body">
+        <h2 class="h5">OCR Text</h2>
+        {% if document.ocr_text %}
+            <pre class="mb-0 document-pre">{{ document.ocr_text }}</pre>
+        {% elif document.ocr_error %}
+            <p class="mb-0 text-muted">{{ document.ocr_error }}</p>
+        {% else %}
+            <p class="mb-0 text-muted">OCR text is not available yet.</p>
+        {% endif %}
+    </div>
 </div>
 {% endblock %}

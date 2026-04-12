@@ -19,7 +19,6 @@ INSTALLED_APPS = [
     'django.contrib.postgres',
     'accounts',
     'documents',
-    'django_filters',
 ]
 
 MIDDLEWARE = [
@@ -91,7 +90,6 @@ LOGOUT_REDIRECT_URL = '/accounts/login/'
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'UTC'
 USE_I18N = True
-USE_L10N = True
 USE_TZ = True
 
 STATIC_URL = '/static/'

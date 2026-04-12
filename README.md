@@ -1,98 +1,160 @@
-# Document Management System (DMS)
+# Document Management System
 
-A local Django-based Document Management System with OCR, department-level access control, document organization, and search.
+A core Django-based Document Management System for internal use. This version focuses on a stable foundation first: authentication, document upload, searchable document records, organizational ownership, OCR-backed text extraction, and a responsive Bootstrap UI.
 
-## Architecture
+## Project Structure
 
-- `dms_project/`: Django project configuration
-- `accounts/`: custom user model, company/department/unit structure, authentication
-- `documents/`: document model, OCR processing, search and management views
-- `templates/`: Django templates for dashboard, upload, list, detail, edit
-- `media/`: local file storage for uploaded documents
-- `Dockerfile` / `docker-compose.yml`: containers for local development
+```text
+File-management-System/
+|-- accounts/
+|   |-- admin.py
+|   |-- apps.py
+|   |-- migrations/
+|   |-- models.py
+|   |-- tests.py
+|   |-- urls.py
+|   `-- views.py
+|-- documents/
+|   |-- admin.py
+|   |-- forms.py
+|   |-- migrations/
+|   |-- models.py
+|   |-- tests.py
+|   |-- urls.py
+|   |-- validators.py
+|   `-- views.py
+|-- dms_project/
+|   |-- settings.py
+|   |-- urls.py
+|   `-- wsgi.py
+|-- static/
+|   `-- css/
+|-- templates/
+|   |-- documents/
+|   |-- registration/
+|   |-- accounts/
+|   |-- base.html
+|   `-- dashboard.html
+|-- media/
+|-- manage.py
+|-- requirements.txt
+`-- .env.example
+```
 
-## Features
+## Core Features
 
-- Login/logout with role-based access (Admin, Manager, Staff)
-- Company / Department / Unit hierarchy
-- Document upload for PDF/image files with OCR
-- OCR text extraction and metadata suggestions
-- Folder-style storage under `media/storage/{department}/{year}/{document_type}/`
-- Document search by title, tags, OCR content, department, and date
-- Archive browsing by department, year, and document type
-- Basic API endpoints for document listing and detail
-- Secure file handling with department-level document access
+- Login and logout with a custom `User` model built on `AbstractUser`
+- Company, department, unit, and role-aware users
+- UUID-based `Document` model
+- Upload PDF and image files up to 10 MB
+- Department and optional unit ownership for each document
+- Local file storage under `media/documents/`
+- Paginated document list for responsive browsing
+- Search by title, description, and OCR text
+- Role-based access by department scope
+- Automatic OCR processing for PDF and image uploads with status tracking
+- PostgreSQL-aware full-text ranking when PostgreSQL is enabled
+- SQLite fallback for local development
+
+## Document Model
+
+The `Document` model includes:
+
+- `id` - UUID primary key
+- `title`
+- `description`
+- `file`
+- `department`
+- `unit`
+- `ocr_text`
+- `ocr_status`
+- `ocr_error`
+- `uploaded_by`
+- `created_at`
+- `updated_at`
 
 ## Setup
 
 1. Create and activate a virtual environment:
+
    ```bash
    python -m venv .venv
    .venv\Scripts\activate
    ```
 
-2. Install requirements:
+2. Install dependencies:
+
    ```bash
    pip install -r requirements.txt
    ```
 
-3. Install system dependencies on Linux:
+3. Install OCR system packages on Linux:
+
    ```bash
    sudo apt-get update
    sudo apt-get install -y tesseract-ocr poppler-utils
    ```
 
-4. Configure PostgreSQL and environment variables in `dms_project/settings.py` or via environment. PostgreSQL is the production database and should be used for deployment:
-   - `POSTGRES_DB`
-   - `POSTGRES_USER`
-   - `POSTGRES_PASSWORD`
-   - `POSTGRES_HOST`
-   - `POSTGRES_PORT`
+4. Copy environment defaults:
 
-   For local development only, you may optionally set `DJANGO_USE_SQLITE=True`.
+   ```bash
+   copy .env.example .env
+   ```
 
-5. Run migrations and create a superuser:
+5. For local development, set `DJANGO_USE_SQLITE=True` in `.env`.
+
+6. Run migrations:
+
    ```bash
    python manage.py migrate
+   ```
+
+7. Create an admin user:
+
+   ```bash
    python manage.py createsuperuser
    ```
 
-6. Start the development server:
+8. Start the server:
+
    ```bash
    python manage.py runserver
    ```
 
-7. Open `http://127.0.0.1:8000/` in your browser.
+9. Open `http://127.0.0.1:8000/`.
 
-## Docker
+## Database Configuration
 
-```bash
-docker compose up --build
+PostgreSQL is the default target. Configure these variables in `.env` for PostgreSQL:
+
+- `POSTGRES_DB`
+- `POSTGRES_USER`
+- `POSTGRES_PASSWORD`
+- `POSTGRES_HOST`
+- `POSTGRES_PORT`
+
+For local development only, use:
+
+```env
+DJANGO_USE_SQLITE=True
 ```
 
-The web app will be available at `http://127.0.0.1:8000`.
-
-## Production deployment
-
-Create a local `.env` file from `.env.example` and set production values.
-
-Start the production stack with:
+## Running Tests
 
 ```bash
-docker compose -f docker-compose.prod.yml up --build
+python manage.py test
+python manage.py check
 ```
 
-Then browse to `http://localhost`.
+## Notes on Scale
 
-This setup uses:
-- PostgreSQL as the production database
-- Gunicorn as the application server
-- Nginx as a reverse proxy
-- `media/` for uploaded files
+- Documents are listed with pagination to keep response times steady.
+- Querysets use `select_related` for uploader and organizational data to reduce extra queries.
+- PostgreSQL search uses weighted full-text ranking when available.
+- Database indexes are added on title, created time, uploader plus created time, department/unit plus created time, and OCR status plus created time.
 
-## Notes
+## Access Rules
 
-- Use Django admin to create companies, departments, units, and roles.
-- Uploaded documents are stored in `media/storage/`.
-- OCR is powered by Tesseract and uses `pdf2image` for PDF rendering.
-- The app is designed to be deployable behind Nginx later.
+- Admins can view, upload, edit, and delete across all departments.
+- Managers are scoped to their department and can edit or delete documents in that scope.
+- Staff are scoped to their department and can edit only their own documents.

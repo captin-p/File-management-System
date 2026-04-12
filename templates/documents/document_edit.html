@@ -1,19 +1,45 @@
 {% extends 'base.html' %}
 {% block content %}
-<h1>Edit Metadata</h1>
-<form method="post">
-    {% csrf_token %}
-    <div class="mb-3">{{ form.title.label_tag }}{{ form.title }}</div>
-    <div class="mb-3">{{ form.description.label_tag }}{{ form.description }}</div>
-    <div class="mb-3">{{ form.department.label_tag }}{{ form.department }}</div>
-    <div class="mb-3">{{ form.unit.label_tag }}{{ form.unit }}</div>
-    <div class="mb-3">{{ form.document_type.label_tag }}{{ form.document_type }}</div>
-    <div class="mb-3">{{ form.tags.label_tag }}{{ form.tags }}</div>
-    {% if suggested_tags %}
-        <div class="alert alert-info">
-            Suggested tags: {{ suggested_tags|join:', ' }}
+<div class="row justify-content-center">
+    <div class="col-lg-8">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <div>
+                <h1 class="h2 mb-1">Edit document</h1>
+                <p class="text-muted mb-0">Update metadata and organizational ownership.</p>
+            </div>
+            <a href="{% url 'documents:document_detail' object.pk %}" class="btn btn-outline-primary">Back</a>
         </div>
-    {% endif %}
-    <button class="btn btn-success">Save</button>
-</form>
+
+        <div class="card shadow-sm">
+            <div class="card-body p-4">
+                <form method="post" novalidate>
+                    {% csrf_token %}
+                    <div class="mb-3">
+                        <label for="{{ form.title.id_for_label }}" class="form-label">{{ form.title.label }}</label>
+                        {{ form.title }}
+                        {% for error in form.title.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+                    </div>
+                    <div class="mb-3">
+                        <label for="{{ form.description.id_for_label }}" class="form-label">{{ form.description.label }}</label>
+                        {{ form.description }}
+                        {% for error in form.description.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+                    </div>
+                    <div class="row g-3 mb-4">
+                        <div class="col-md-6">
+                            <label for="{{ form.department.id_for_label }}" class="form-label">{{ form.department.label }}</label>
+                            {{ form.department }}
+                            {% for error in form.department.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+                        </div>
+                        <div class="col-md-6">
+                            <label for="{{ form.unit.id_for_label }}" class="form-label">{{ form.unit.label }}</label>
+                            {{ form.unit }}
+                            {% for error in form.unit.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+                        </div>
+                    </div>
+                    <button class="btn btn-primary">Save changes</button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
