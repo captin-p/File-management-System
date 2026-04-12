@@ -6,6 +6,7 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import connection
 from django.test import TestCase, override_settings
 from django.urls import reverse
 
@@ -367,9 +368,12 @@ class DocumentAccessTest(TestCase):
         self.assertEqual(processed_ids, {str(self.payroll_doc.pk), str(self.audit_doc.pk)})
         self.assertIn('Processed 2 document(s). completed=2', stdout.getvalue())
 
-    def test_rebuild_search_index_skips_sqlite_fallback(self):
+    def test_rebuild_search_index_command_matches_database_backend(self):
         stdout = StringIO()
 
         call_command('rebuild_search_index', stdout=stdout)
 
-        self.assertIn('Search index rebuild skipped', stdout.getvalue())
+        if connection.vendor == 'postgresql':
+            self.assertIn('Rebuilt search vectors for 3 of 3 document(s).', stdout.getvalue())
+        else:
+            self.assertIn('Search index rebuild skipped', stdout.getvalue())
