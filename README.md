@@ -19,6 +19,7 @@ A local Django-based Document Management System with OCR, department-level acces
 - OCR text extraction and metadata suggestions
 - Folder-style storage under `media/storage/{department}/{year}/{document_type}/`
 - Document search by title, tags, OCR content, department, and date
+- Archive browsing by department, year, and document type
 - Basic API endpoints for document listing and detail
 - Secure file handling with department-level document access
 

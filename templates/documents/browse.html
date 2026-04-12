@@ -1,0 +1,70 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>Archive Browser</h1>
+<div class="row">
+    <div class="col-md-3">
+        <div class="card mb-3">
+            <div class="card-header">Departments</div>
+            <ul class="list-group list-group-flush">
+                {% for dept in departments %}
+                    <li class="list-group-item {% if selected_department and selected_department.slug == dept.slug %}active{% endif %}">
+                        <a class="text-decoration-none {% if selected_department and selected_department.slug == dept.slug %}text-white{% endif %}" href="{% url 'documents:browse_department' dept.slug %}">{{ dept.name }}</a>
+                    </li>
+                {% empty %}
+                    <li class="list-group-item">No departments available.</li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card mb-3">
+            <div class="card-header">Years</div>
+            <ul class="list-group list-group-flush">
+                {% for year in years %}
+                    <li class="list-group-item {% if selected_year == year %}active{% endif %}">
+                        <a class="text-decoration-none {% if selected_year == year %}text-white{% endif %}" href="{% url 'documents:browse_folder_year' selected_department.slug year %}">{{ year }}</a>
+                    </li>
+                {% empty %}
+                    <li class="list-group-item">Select a department to view years.</li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card mb-3">
+            <div class="card-header">Document Types</div>
+            <ul class="list-group list-group-flush">
+                {% for doc_type in types %}
+                    <li class="list-group-item {% if selected_type == doc_type %}active{% endif %}">
+                        <a class="text-decoration-none {% if selected_type == doc_type %}text-white{% endif %}" href="{% url 'documents:browse_folder_type' selected_department.slug selected_year doc_type %}">{{ doc_type }}</a>
+                    </li>
+                {% empty %}
+                    <li class="list-group-item">Select a year to view types.</li>
+                {% endfor %}
+            </ul>
+        </div>
+    </div>
+</div>
+{% if folder_docs is not None %}
+    <h2>Documents</h2>
+    {% if folder_docs %}
+        <table class="table table-hover">
+            <thead>
+                <tr><th>Title</th><th>Type</th><th>Uploaded</th><th>Actions</th></tr>
+            </thead>
+            <tbody>
+                {% for document in folder_docs %}
+                    <tr>
+                        <td><a href="{% url 'documents:document_detail' document.pk %}">{{ document.title }}</a></td>
+                        <td>{{ document.document_type }}</td>
+                        <td>{{ document.upload_date|date:'Y-m-d' }}</td>
+                        <td><a class="btn btn-sm btn-secondary" href="{% url 'documents:edit_document' document.pk %}">Edit</a></td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <div class="alert alert-secondary">No documents found for this path.</div>
+    {% endif %}
+{% endif %}
+{% endblock %}
