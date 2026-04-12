@@ -1,0 +1,13 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>User Profile</h1>
+<ul class="list-group">
+    <li class="list-group-item"><strong>Username:</strong> {{ user.username }}</li>
+    <li class="list-group-item"><strong>Name:</strong> {{ user.get_full_name }}</li>
+    <li class="list-group-item"><strong>Email:</strong> {{ user.email }}</li>
+    <li class="list-group-item"><strong>Role:</strong> {{ user.get_role_display }}</li>
+    <li class="list-group-item"><strong>Company:</strong> {{ user.company }}</li>
+    <li class="list-group-item"><strong>Department:</strong> {{ user.department }}</li>
+    <li class="list-group-item"><strong>Unit:</strong> {{ user.unit }}</li>
+</ul>
+{% endblock %}

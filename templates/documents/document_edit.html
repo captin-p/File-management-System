@@ -1,0 +1,19 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>Edit Metadata</h1>
+<form method="post">
+    {% csrf_token %}
+    <div class="mb-3">{{ form.title.label_tag }}{{ form.title }}</div>
+    <div class="mb-3">{{ form.description.label_tag }}{{ form.description }}</div>
+    <div class="mb-3">{{ form.department.label_tag }}{{ form.department }}</div>
+    <div class="mb-3">{{ form.unit.label_tag }}{{ form.unit }}</div>
+    <div class="mb-3">{{ form.document_type.label_tag }}{{ form.document_type }}</div>
+    <div class="mb-3">{{ form.tags.label_tag }}{{ form.tags }}</div>
+    {% if suggested_tags %}
+        <div class="alert alert-info">
+            Suggested tags: {{ suggested_tags|join:', ' }}
+        </div>
+    {% endif %}
+    <button class="btn btn-success">Save</button>
+</form>
+{% endblock %}

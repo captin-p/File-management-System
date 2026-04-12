@@ -1,0 +1,12 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>Upload Document</h1>
+<form method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+    <div class="mb-3"> {{ form.file.label_tag }} {{ form.file }}</div>
+    <div class="mb-3"> {{ form.department.label_tag }} {{ form.department }}</div>
+    <div class="mb-3"> {{ form.unit.label_tag }} {{ form.unit }}</div>
+    <div class="mb-3"> {{ form.document_type.label_tag }} {{ form.document_type }}</div>
+    <button class="btn btn-primary">Upload and run OCR</button>
+</form>
+{% endblock %}

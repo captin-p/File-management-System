@@ -1,0 +1,10 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>Delete Document</h1>
+<p>Are you sure you want to delete <strong>{{ document.title }}</strong>?</p>
+<form method="post">
+    {% csrf_token %}
+    <button class="btn btn-danger">Delete</button>
+    <a class="btn btn-secondary" href="/documents/{{ document.pk }}/">Cancel</a>
+</form>
+{% endblock %}
