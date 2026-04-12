@@ -21,7 +21,6 @@ services:
       - db
     environment:
       - DJANGO_DEBUG=True
-      - OCR_PROCESSING_MODE=background
       - POSTGRES_DB=dms
       - POSTGRES_USER=dmsuser
       - POSTGRES_PASSWORD=changeme
@@ -37,7 +36,6 @@ services:
       - db
     environment:
       - DJANGO_DEBUG=True
-      - OCR_PROCESSING_MODE=background
       - POSTGRES_DB=dms
       - POSTGRES_USER=dmsuser
       - POSTGRES_PASSWORD=changeme

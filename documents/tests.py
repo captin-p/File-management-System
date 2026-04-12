@@ -22,7 +22,6 @@ TEST_MEDIA_ROOT.mkdir(exist_ok=True)
 @override_settings(
     MEDIA_ROOT=TEST_MEDIA_ROOT,
     PASSWORD_HASHERS=['django.contrib.auth.hashers.MD5PasswordHasher'],
-    OCR_PROCESSING_MODE='background',
 )
 class DocumentAccessTest(TestCase):
     @classmethod
@@ -120,6 +119,11 @@ class DocumentAccessTest(TestCase):
 
     def test_dashboard_requires_login(self):
         response = self.client.get(reverse('documents:dashboard'))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(reverse('accounts:login'), response.url)
+
+    def test_upload_requires_login(self):
+        response = self.client.get(reverse('documents:upload_document'))
         self.assertEqual(response.status_code, 302)
         self.assertIn(reverse('accounts:login'), response.url)
 
@@ -288,33 +292,42 @@ class DocumentAccessTest(TestCase):
         self.assertEqual(len(response.context['documents']), 20)
 
     @patch('documents.views.process_document_ocr')
-    def test_upload_queues_ocr_processing(self, process_document_ocr_mock):
+    def test_upload_scans_and_prefills_metadata_form(self, process_document_ocr_mock):
         self.client.login(username='admin', password='secret123')
 
-        with self.captureOnCommitCallbacks(execute=True):
-            response = self.client.post(
-                reverse('documents:upload_document'),
-                {
-                    'title': 'Scanned Invoice',
-                    'description': 'OCR test',
-                    'document_type': 'invoice',
-                    'tags': 'invoices, accounts',
-                    'department': self.finance.pk,
-                    'unit': self.payroll.pk,
-                    'file': SimpleUploadedFile('invoice.pdf', b'%PDF-1.4 sample', content_type='application/pdf'),
-                },
-                follow=True,
-            )
+        def mark_ocr_complete(document):
+            document.ocr_text = 'Invoice 4242\nBill to Acme Corp\nTotal due 240.00'
+            document.ocr_status = OCRStatus.COMPLETED
+            document.ocr_error = ''
+            document.save(update_fields=['ocr_text', 'ocr_status', 'ocr_error', 'updated_at'])
+            return OCRStatus.COMPLETED
 
-        document = Document.objects.get(title='Scanned Invoice')
-        self.assertEqual(document.ocr_status, OCRStatus.PENDING)
-        self.assertEqual(document.ocr_text, '')
+        process_document_ocr_mock.side_effect = mark_ocr_complete
+
+        response = self.client.post(
+            reverse('documents:upload_document'),
+            {
+                'department': self.finance.pk,
+                'unit': self.payroll.pk,
+                'file': SimpleUploadedFile('invoice.pdf', b'%PDF-1.4 sample', content_type='application/pdf'),
+            },
+            follow=True,
+        )
+
+        document = Document.objects.get(title='Invoice 4242')
+        self.assertRedirects(
+            response,
+            f"{reverse('documents:edit_document', args=[document.pk])}?prefill=1",
+        )
+        self.assertEqual(document.ocr_status, OCRStatus.COMPLETED)
+        self.assertEqual(document.ocr_text, 'Invoice 4242\nBill to Acme Corp\nTotal due 240.00')
         self.assertEqual(document.document_type, 'invoice')
-        self.assertEqual(sorted(document.tags.values_list('name', flat=True)), ['accounts', 'invoices'])
-        self.assertEqual(document.ocr_jobs.count(), 1)
-        self.assertEqual(document.ocr_jobs.get().status, OCRJobStatus.QUEUED)
-        process_document_ocr_mock.assert_not_called()
-        self.assertContains(response, 'OCR has been queued for background processing.')
+        self.assertIn('Bill to Acme Corp', document.description)
+        self.assertEqual(sorted(document.tags.values_list('name', flat=True)), ['acme', 'bill', 'corp', 'due'])
+        self.assertEqual(document.ocr_jobs.count(), 0)
+        process_document_ocr_mock.assert_called_once()
+        self.assertContains(response, 'OCR filled these fields from the uploaded file.')
+        self.assertContains(response, 'OCR scanned the file and filled metadata suggestions for review.')
 
     def test_upload_rejects_files_over_ten_megabytes(self):
         self.client.login(username='admin', password='secret123')

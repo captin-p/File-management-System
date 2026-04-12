@@ -1,18 +1,16 @@
-from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core.exceptions import PermissionDenied
-from django.db import transaction
 from django.db.models import Count
 from django.http import JsonResponse
-from django.shortcuts import get_object_or_404
+from django.shortcuts import get_object_or_404, redirect
 from django.urls import reverse, reverse_lazy
 from django.views import View
 from django.views.generic import CreateView, DeleteView, DetailView, ListView, TemplateView, UpdateView
 
 from .forms import DocumentMetadataForm, DocumentSearchForm, DocumentUploadForm
 from .models import DOC_TYPE_CHOICES, Document, OCRStatus
-from .services import enqueue_document_ocr, process_document_ocr
+from .services import apply_ocr_metadata_suggestions, process_document_ocr
 from .utils import (
     apply_document_filters,
     deletable_documents_for_user,
@@ -114,6 +112,8 @@ class DocumentUploadView(LoginRequiredMixin, UserScopedFormMixin, CreateView):
     success_url = reverse_lazy('documents:document_list')
 
     def dispatch(self, request, *args, **kwargs):
+        if not request.user.is_authenticated:
+            return super().dispatch(request, *args, **kwargs)
         if not user_can_upload_documents(request.user):
             raise PermissionDenied('Your account is not assigned to a document-owning department.')
         return super().dispatch(request, *args, **kwargs)
@@ -127,18 +127,17 @@ class DocumentUploadView(LoginRequiredMixin, UserScopedFormMixin, CreateView):
 
     def form_valid(self, form):
         form.instance.uploaded_by = self.request.user
-        response = super().form_valid(form)
-        messages.success(self.request, 'Document uploaded successfully.')
-        if settings.OCR_PROCESSING_MODE == 'sync':
-            ocr_status = process_document_ocr(self.object)
-            if ocr_status == OCRStatus.COMPLETED:
-                messages.info(self.request, 'OCR text was extracted and added to search.')
-            elif self.object.ocr_error:
-                messages.warning(self.request, f'OCR status: {self.object.get_ocr_status_display()}. {self.object.ocr_error}')
-        else:
-            transaction.on_commit(lambda: enqueue_document_ocr(self.object))
-            messages.info(self.request, 'OCR has been queued for background processing.')
-        return response
+        self.object = form.save()
+        ocr_status = process_document_ocr(self.object)
+        suggestions = apply_ocr_metadata_suggestions(self.object)
+        messages.success(self.request, 'File uploaded successfully.')
+        if ocr_status == OCRStatus.COMPLETED:
+            messages.info(self.request, 'OCR scanned the file and filled metadata suggestions for review.')
+        elif self.object.ocr_error:
+            messages.warning(self.request, f'OCR status: {self.object.get_ocr_status_display()}. {self.object.ocr_error}')
+        if suggestions.get('tags'):
+            messages.info(self.request, f"Suggested tags: {', '.join(suggestions['tags'])}.")
+        return redirect(f"{reverse('documents:edit_document', args=[self.object.pk])}?prefill=1")
 
 
 class DocumentListView(DocumentFilterMixin, AccessibleDocumentMixin, ListView):
@@ -191,6 +190,11 @@ class DocumentUpdateView(LoginRequiredMixin, UserScopedFormMixin, UpdateView):
         response = super().form_valid(form)
         messages.success(self.request, 'Document details updated successfully.')
         return response
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['prefill_from_ocr'] = self.request.GET.get('prefill') == '1'
+        return context
 
     def get_success_url(self):
         return reverse('documents:document_detail', args=[self.object.pk])

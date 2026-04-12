@@ -99,7 +99,14 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
-OCR_PROCESSING_MODE = os.environ.get('OCR_PROCESSING_MODE', 'background')
+DEFAULT_TESSERACT_CMD = Path('C:/Program Files/Tesseract-OCR/tesseract.exe')
+OCR_TESSERACT_CMD = os.environ.get('OCR_TESSERACT_CMD') or (
+    str(DEFAULT_TESSERACT_CMD) if DEFAULT_TESSERACT_CMD.exists() else ''
+)
+DEFAULT_POPPLER_PATH = Path.home() / 'AppData/Local/Programs/Poppler/Library/bin'
+OCR_POPPLER_PATH = os.environ.get('OCR_POPPLER_PATH') or (
+    str(DEFAULT_POPPLER_PATH) if DEFAULT_POPPLER_PATH.exists() else ''
+)
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 

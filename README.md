@@ -57,8 +57,8 @@ File-management-System/
 - Archive browser by department, year, and document type
 - Search by title, description, and OCR text
 - Role-based access by department scope
-- Automatic OCR processing for PDF and image uploads with status tracking
-- Background OCR job queue so uploads return quickly for large files
+- Upload-first OCR flow that scans files and pre-fills metadata for review
+- Background OCR job queue for bulk imports and retry processing
 - JSON API for document list and detail access
 - Materialized PostgreSQL full-text search index when PostgreSQL is enabled
 - SQLite fallback for local development
@@ -115,13 +115,22 @@ OCR work is tracked in `OCRJob` records with queued, processing, completed, and 
 
 5. For local development, set `DJANGO_USE_SQLITE=True` in `.env`.
 
-   OCR is queued in the background by default:
+   OCR paths can be left empty when the commands are available on PATH:
 
    ```env
-   OCR_PROCESSING_MODE=background
+   OCR_TESSERACT_CMD=
+   OCR_POPPLER_PATH=
    ```
 
-   Use `OCR_PROCESSING_MODE=sync` only when you want uploads to run OCR inline for quick debugging.
+   The normal upload flow scans the file first and opens the metadata form with OCR suggestions.
+
+   On Windows, set `OCR_TESSERACT_CMD` if Tesseract is installed but not on PATH:
+
+   ```env
+   OCR_TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe
+   ```
+
+   PDF OCR also requires Poppler. Set `OCR_POPPLER_PATH` to the folder containing `pdftoppm` and `pdfinfo` when those commands are not on PATH.
 
 6. Run migrations:
 
@@ -141,7 +150,7 @@ OCR work is tracked in `OCRJob` records with queued, processing, completed, and 
    python manage.py runserver
    ```
 
-9. In a second terminal, start the OCR worker:
+9. In a second terminal, start the OCR worker for queued bulk/retry jobs:
 
    ```bash
    python manage.py process_ocr_queue --loop
@@ -192,7 +201,9 @@ The API uses the same access scope as the HTML interface.
 
 ## OCR Maintenance
 
-Uploads create queued OCR jobs when `OCR_PROCESSING_MODE=background`.
+The upload page saves the file first, runs OCR, then opens the metadata form with suggested title, description, document type, and tags. Save that form after review.
+
+Queued OCR jobs are available for bulk imports and retries.
 
 Run one batch of queued OCR jobs:
 

@@ -12,6 +12,11 @@
 
         <div class="card shadow-sm">
             <div class="card-body p-4">
+                {% if prefill_from_ocr %}
+                    <div class="alert alert-info">
+                        OCR filled these fields from the uploaded file. Review and save the metadata.
+                    </div>
+                {% endif %}
                 <form method="post" novalidate>
                     {% csrf_token %}
                     <div class="mb-3">

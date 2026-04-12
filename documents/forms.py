@@ -82,31 +82,21 @@ class OrganizationScopedFormMixin(BootstrapFormMixin):
 
 
 class DocumentUploadForm(OrganizationScopedFormMixin, forms.ModelForm):
-    tags = forms.CharField(
-        required=False,
-        help_text='Comma-separated tags',
-        widget=forms.TextInput(attrs={'placeholder': 'finance, q1, payroll'}),
-    )
-
     class Meta:
         model = Document
-        fields = ['title', 'description', 'document_type', 'department', 'unit', 'file', 'tags']
+        fields = ['department', 'unit', 'file']
         widgets = {
-            'title': forms.TextInput(attrs={'placeholder': 'Quarterly finance report'}),
-            'description': forms.Textarea(attrs={'rows': 4, 'placeholder': 'Add a helpful summary for search and review.'}),
-            'document_type': forms.Select(choices=DOC_TYPE_CHOICES),
             'file': forms.ClearableFileInput(attrs={'accept': '.pdf,.png,.jpg,.jpeg,.tif,.tiff'}),
         }
 
-    def clean_tags(self):
-        return normalize_tag_names(self.cleaned_data.get('tags'))
-
     def save(self, commit=True):
         document = super().save(commit=False)
+        uploaded_file = self.cleaned_data.get('file')
+        if uploaded_file and not document.title:
+            document.title = uploaded_file.name.rsplit('.', 1)[0][:255] or 'Scanned document'
+        document.document_type = 'other'
         if commit:
             document.save()
-            tags = [Tag.objects.get_or_create(name=name)[0] for name in self.cleaned_data.get('tags', [])]
-            document.tags.set(tags)
         return document
 
 
