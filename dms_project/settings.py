@@ -50,6 +50,9 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'dms_project.wsgi.application'
 
+# Use PostgreSQL by default in production.
+# SQLite is supported only as a local development/test fallback
+# when DJANGO_USE_SQLITE=True is explicitly set.
 USE_SQLITE = os.environ.get('DJANGO_USE_SQLITE', 'False') == 'True'
 
 if USE_SQLITE:

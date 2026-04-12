@@ -42,14 +42,14 @@ A local Django-based Document Management System with OCR, department-level acces
    sudo apt-get install -y tesseract-ocr poppler-utils
    ```
 
-4. Configure PostgreSQL and environment variables in `dms_project/settings.py` or via environment:
+4. Configure PostgreSQL and environment variables in `dms_project/settings.py` or via environment. PostgreSQL is the production database and should be used for deployment:
    - `POSTGRES_DB`
    - `POSTGRES_USER`
    - `POSTGRES_PASSWORD`
    - `POSTGRES_HOST`
    - `POSTGRES_PORT`
 
-   For local tests without PostgreSQL, set `DJANGO_USE_SQLITE=True`.
+   For local development only, you may optionally set `DJANGO_USE_SQLITE=True`.
 
 5. Run migrations and create a superuser:
    ```bash
