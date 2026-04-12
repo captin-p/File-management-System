@@ -12,7 +12,7 @@ from django.urls import reverse
 
 from accounts.models import Company, Department, Unit
 
-from .models import Document, OCRStatus, Tag
+from .models import Document, OCRJob, OCRJobStatus, OCRStatus, Tag
 
 User = get_user_model()
 TEST_MEDIA_ROOT = Path(__file__).resolve().parent.parent / '.test_media'
@@ -22,6 +22,7 @@ TEST_MEDIA_ROOT.mkdir(exist_ok=True)
 @override_settings(
     MEDIA_ROOT=TEST_MEDIA_ROOT,
     PASSWORD_HASHERS=['django.contrib.auth.hashers.MD5PasswordHasher'],
+    OCR_PROCESSING_MODE='background',
 )
 class DocumentAccessTest(TestCase):
     @classmethod
@@ -287,38 +288,33 @@ class DocumentAccessTest(TestCase):
         self.assertEqual(len(response.context['documents']), 20)
 
     @patch('documents.views.process_document_ocr')
-    def test_upload_runs_ocr_processing(self, process_document_ocr_mock):
+    def test_upload_queues_ocr_processing(self, process_document_ocr_mock):
         self.client.login(username='admin', password='secret123')
 
-        def mark_ocr_complete(document):
-            document.ocr_text = 'scanned invoice number 42'
-            document.ocr_status = OCRStatus.COMPLETED
-            document.ocr_error = ''
-            document.save(update_fields=['ocr_text', 'ocr_status', 'ocr_error', 'updated_at'])
-            return OCRStatus.COMPLETED
-
-        process_document_ocr_mock.side_effect = mark_ocr_complete
-
-        response = self.client.post(
-            reverse('documents:upload_document'),
-            {
-                'title': 'Scanned Invoice',
-                'description': 'OCR test',
-                'document_type': 'invoice',
-                'tags': 'invoices, accounts',
-                'department': self.finance.pk,
-                'unit': self.payroll.pk,
-                'file': SimpleUploadedFile('invoice.pdf', b'%PDF-1.4 sample', content_type='application/pdf'),
-            },
-            follow=True,
-        )
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(
+                reverse('documents:upload_document'),
+                {
+                    'title': 'Scanned Invoice',
+                    'description': 'OCR test',
+                    'document_type': 'invoice',
+                    'tags': 'invoices, accounts',
+                    'department': self.finance.pk,
+                    'unit': self.payroll.pk,
+                    'file': SimpleUploadedFile('invoice.pdf', b'%PDF-1.4 sample', content_type='application/pdf'),
+                },
+                follow=True,
+            )
 
         document = Document.objects.get(title='Scanned Invoice')
-        self.assertEqual(document.ocr_status, OCRStatus.COMPLETED)
-        self.assertEqual(document.ocr_text, 'scanned invoice number 42')
+        self.assertEqual(document.ocr_status, OCRStatus.PENDING)
+        self.assertEqual(document.ocr_text, '')
         self.assertEqual(document.document_type, 'invoice')
         self.assertEqual(sorted(document.tags.values_list('name', flat=True)), ['accounts', 'invoices'])
-        self.assertContains(response, 'OCR text was extracted and added to search.')
+        self.assertEqual(document.ocr_jobs.count(), 1)
+        self.assertEqual(document.ocr_jobs.get().status, OCRJobStatus.QUEUED)
+        process_document_ocr_mock.assert_not_called()
+        self.assertContains(response, 'OCR has been queued for background processing.')
 
     def test_upload_rejects_files_over_ten_megabytes(self):
         self.client.login(username='admin', password='secret123')
@@ -367,6 +363,43 @@ class DocumentAccessTest(TestCase):
         processed_ids = {str(call.args[0].pk) for call in process_document_ocr_mock.call_args_list}
         self.assertEqual(processed_ids, {str(self.payroll_doc.pk), str(self.audit_doc.pk)})
         self.assertIn('Processed 2 document(s). completed=2', stdout.getvalue())
+
+    def test_queue_ocr_jobs_skips_active_jobs(self):
+        self.payroll_doc.ocr_status = OCRStatus.FAILED
+        self.payroll_doc.save(update_fields=['ocr_status', 'updated_at'])
+
+        first_stdout = StringIO()
+        call_command('queue_ocr_jobs', '--document-id', self.payroll_doc.pk, stdout=first_stdout)
+        second_stdout = StringIO()
+        call_command('queue_ocr_jobs', '--document-id', self.payroll_doc.pk, stdout=second_stdout)
+
+        self.assertEqual(self.payroll_doc.ocr_jobs.count(), 1)
+        self.assertIn('Queued 1 OCR job(s). skipped_active=0', first_stdout.getvalue())
+        self.assertIn('Queued 0 OCR job(s). skipped_active=1', second_stdout.getvalue())
+
+    @patch('documents.services.process_document_ocr')
+    def test_process_ocr_queue_processes_queued_job(self, process_document_ocr_mock):
+        job = OCRJob.objects.create(document=self.payroll_doc)
+
+        def fake_process(document):
+            document.ocr_text = 'queued payroll text'
+            document.ocr_status = OCRStatus.COMPLETED
+            document.ocr_error = ''
+            document.save(update_fields=['ocr_text', 'ocr_status', 'ocr_error', 'updated_at'])
+            return OCRStatus.COMPLETED
+
+        process_document_ocr_mock.side_effect = fake_process
+
+        stdout = StringIO()
+        call_command('process_ocr_queue', '--limit', '1', stdout=stdout)
+
+        job.refresh_from_db()
+        self.payroll_doc.refresh_from_db()
+        self.assertEqual(job.status, OCRJobStatus.COMPLETED)
+        self.assertEqual(job.attempts, 1)
+        self.assertEqual(self.payroll_doc.ocr_status, OCRStatus.COMPLETED)
+        self.assertEqual(self.payroll_doc.ocr_text, 'queued payroll text')
+        self.assertIn('Processed 1 OCR job(s). completed=1, failed=0', stdout.getvalue())
 
     def test_rebuild_search_index_command_matches_database_backend(self):
         stdout = StringIO()

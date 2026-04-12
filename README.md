@@ -58,6 +58,7 @@ File-management-System/
 - Search by title, description, and OCR text
 - Role-based access by department scope
 - Automatic OCR processing for PDF and image uploads with status tracking
+- Background OCR job queue so uploads return quickly for large files
 - JSON API for document list and detail access
 - Materialized PostgreSQL full-text search index when PostgreSQL is enabled
 - SQLite fallback for local development
@@ -81,6 +82,8 @@ The `Document` model includes:
 - `uploaded_by`
 - `created_at`
 - `updated_at`
+
+OCR work is tracked in `OCRJob` records with queued, processing, completed, and failed states.
 
 ## Setup
 
@@ -112,6 +115,14 @@ The `Document` model includes:
 
 5. For local development, set `DJANGO_USE_SQLITE=True` in `.env`.
 
+   OCR is queued in the background by default:
+
+   ```env
+   OCR_PROCESSING_MODE=background
+   ```
+
+   Use `OCR_PROCESSING_MODE=sync` only when you want uploads to run OCR inline for quick debugging.
+
 6. Run migrations:
 
    ```bash
@@ -130,7 +141,13 @@ The `Document` model includes:
    python manage.py runserver
    ```
 
-9. Open `http://127.0.0.1:8000/`.
+9. In a second terminal, start the OCR worker:
+
+   ```bash
+   python manage.py process_ocr_queue --loop
+   ```
+
+10. Open `http://127.0.0.1:8000/`.
 
 ## Database Configuration
 
@@ -175,7 +192,29 @@ The API uses the same access scope as the HTML interface.
 
 ## OCR Maintenance
 
-Re-run OCR for documents that are pending, failed, or skipped:
+Uploads create queued OCR jobs when `OCR_PROCESSING_MODE=background`.
+
+Run one batch of queued OCR jobs:
+
+```bash
+python manage.py process_ocr_queue --limit 10
+```
+
+Run a long-lived worker:
+
+```bash
+python manage.py process_ocr_queue --loop
+```
+
+Queue OCR jobs for existing documents:
+
+```bash
+python manage.py queue_ocr_jobs
+python manage.py queue_ocr_jobs --status failed --status skipped
+python manage.py queue_ocr_jobs --document-id <uuid>
+```
+
+Re-run OCR synchronously for documents that are pending, failed, or skipped:
 
 ```bash
 python manage.py reprocess_ocr
@@ -211,6 +250,7 @@ python manage.py rebuild_search_index --document-id <uuid>
 - Querysets use `select_related` for uploader and organizational data to reduce extra queries.
 - PostgreSQL search uses a materialized weighted `tsvector` column with a GIN index for fast OCR-backed searches.
 - SQLite development mode falls back to direct text filtering so the project remains easy to run locally.
+- OCR runs from a queue-backed worker process, so uploads do not block on expensive PDF/image extraction.
 - Database indexes are added on title, created time, uploader plus created time, department/unit plus created time, OCR status plus created time, and document type plus created time.
 
 ## Access Rules

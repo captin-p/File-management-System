@@ -21,6 +21,23 @@ services:
       - db
     environment:
       - DJANGO_DEBUG=True
+      - OCR_PROCESSING_MODE=background
+      - POSTGRES_DB=dms
+      - POSTGRES_USER=dmsuser
+      - POSTGRES_PASSWORD=changeme
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+  worker:
+    build: .
+    command: python manage.py process_ocr_queue --loop
+    volumes:
+      - .:/app
+      - media_data:/app/media
+    depends_on:
+      - db
+    environment:
+      - DJANGO_DEBUG=True
+      - OCR_PROCESSING_MODE=background
       - POSTGRES_DB=dms
       - POSTGRES_USER=dmsuser
       - POSTGRES_PASSWORD=changeme

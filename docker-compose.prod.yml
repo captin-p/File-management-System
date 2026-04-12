@@ -16,6 +16,7 @@ services:
     env_file: .env
     environment:
       - DJANGO_ENV=production
+      - OCR_PROCESSING_MODE=background
     command: gunicorn dms_project.wsgi:application --bind 0.0.0.0:8000 --workers 3
     depends_on:
       - db
@@ -24,6 +25,17 @@ services:
       - static_data:/app/staticfiles
     expose:
       - '8000'
+
+  worker:
+    build: .
+    env_file: .env
+    environment:
+      - OCR_PROCESSING_MODE=background
+    command: python manage.py process_ocr_queue --loop
+    depends_on:
+      - db
+    volumes:
+      - media_data:/app/media
 
   nginx:
     image: nginx:stable-alpine

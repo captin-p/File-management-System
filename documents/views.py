@@ -1,6 +1,8 @@
+from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core.exceptions import PermissionDenied
+from django.db import transaction
 from django.db.models import Count
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
@@ -10,7 +12,7 @@ from django.views.generic import CreateView, DeleteView, DetailView, ListView, T
 
 from .forms import DocumentMetadataForm, DocumentSearchForm, DocumentUploadForm
 from .models import DOC_TYPE_CHOICES, Document, OCRStatus
-from .services import process_document_ocr
+from .services import enqueue_document_ocr, process_document_ocr
 from .utils import (
     apply_document_filters,
     deletable_documents_for_user,
@@ -90,6 +92,9 @@ class DashboardView(LoginRequiredMixin, TemplateView):
         queryset = filter_documents_for_user(self.request.user, Document.objects.for_list())
         context['document_count'] = queryset.count()
         context['my_document_count'] = queryset.filter(uploaded_by=self.request.user).count()
+        context['ocr_backlog_count'] = queryset.filter(
+            ocr_status__in=[OCRStatus.PENDING, OCRStatus.PROCESSING]
+        ).count()
         context['recent_documents'] = queryset[:5]
         context['top_uploaders'] = (
             filter_documents_for_user(self.request.user, Document.objects.all())
@@ -123,12 +128,16 @@ class DocumentUploadView(LoginRequiredMixin, UserScopedFormMixin, CreateView):
     def form_valid(self, form):
         form.instance.uploaded_by = self.request.user
         response = super().form_valid(form)
-        ocr_status = process_document_ocr(self.object)
         messages.success(self.request, 'Document uploaded successfully.')
-        if ocr_status == OCRStatus.COMPLETED:
-            messages.info(self.request, 'OCR text was extracted and added to search.')
-        elif self.object.ocr_error:
-            messages.warning(self.request, f'OCR status: {self.object.get_ocr_status_display()}. {self.object.ocr_error}')
+        if settings.OCR_PROCESSING_MODE == 'sync':
+            ocr_status = process_document_ocr(self.object)
+            if ocr_status == OCRStatus.COMPLETED:
+                messages.info(self.request, 'OCR text was extracted and added to search.')
+            elif self.object.ocr_error:
+                messages.warning(self.request, f'OCR status: {self.object.get_ocr_status_display()}. {self.object.ocr_error}')
+        else:
+            transaction.on_commit(lambda: enqueue_document_ocr(self.object))
+            messages.info(self.request, 'OCR has been queued for background processing.')
         return response
 
 

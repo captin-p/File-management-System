@@ -73,6 +73,8 @@
                     <td>
                         {% if document.ocr_status == 'completed' %}
                             <span class="badge text-bg-success">Ready</span>
+                        {% elif document.ocr_status == 'processing' %}
+                            <span class="badge text-bg-info">Processing</span>
                         {% elif document.ocr_status == 'failed' %}
                             <span class="badge text-bg-danger">Failed</span>
                         {% elif document.ocr_status == 'skipped' %}

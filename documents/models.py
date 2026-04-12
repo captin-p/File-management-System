@@ -36,9 +36,17 @@ def document_search_vector():
 
 class OCRStatus(models.TextChoices):
     PENDING = 'pending', 'Pending'
+    PROCESSING = 'processing', 'Processing'
     COMPLETED = 'completed', 'Completed'
     FAILED = 'failed', 'Failed'
     SKIPPED = 'skipped', 'Skipped'
+
+
+class OCRJobStatus(models.TextChoices):
+    QUEUED = 'queued', 'Queued'
+    PROCESSING = 'processing', 'Processing'
+    COMPLETED = 'completed', 'Completed'
+    FAILED = 'failed', 'Failed'
 
 
 def document_upload_path(instance, filename):
@@ -166,3 +174,32 @@ class Document(models.Model):
     def clean(self):
         if self.unit_id and self.department_id and self.unit.department_id != self.department_id:
             raise ValidationError({'unit': 'Selected unit must belong to the selected department.'})
+
+
+class OCRJob(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    document = models.ForeignKey(Document, on_delete=models.CASCADE, related_name='ocr_jobs')
+    status = models.CharField(
+        max_length=20,
+        choices=OCRJobStatus.choices,
+        default=OCRJobStatus.QUEUED,
+    )
+    attempts = models.PositiveIntegerField(default=0)
+    max_attempts = models.PositiveIntegerField(default=3)
+    error = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['created_at']
+        indexes = [
+            models.Index(fields=['status', 'created_at']),
+            models.Index(fields=['document', 'status', 'created_at']),
+        ]
+        verbose_name = 'OCR job'
+        verbose_name_plural = 'OCR jobs'
+
+    def __str__(self):
+        return f'{self.document_id} / {self.status}'
