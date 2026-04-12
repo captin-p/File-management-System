@@ -72,6 +72,24 @@ docker compose up --build
 
 The web app will be available at `http://127.0.0.1:8000`.
 
+## Production deployment
+
+Create a local `.env` file from `.env.example` and set production values.
+
+Start the production stack with:
+
+```bash
+docker compose -f docker-compose.prod.yml up --build
+```
+
+Then browse to `http://localhost`.
+
+This setup uses:
+- PostgreSQL as the production database
+- Gunicorn as the application server
+- Nginx as a reverse proxy
+- `media/` for uploaded files
+
 ## Notes
 
 - Use Django admin to create companies, departments, units, and roles.
