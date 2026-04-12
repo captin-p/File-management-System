@@ -52,6 +52,18 @@
                     <dd class="col-sm-7">{{ document.created_at|date:'Y-m-d H:i' }}</dd>
                     <dt class="col-sm-5">Updated</dt>
                     <dd class="col-sm-7">{{ document.updated_at|date:'Y-m-d H:i' }}</dd>
+                    <dt class="col-sm-5">Original file</dt>
+                    <dd class="col-sm-7 text-break">{{ document.original_filename|default:'-' }}</dd>
+                    <dt class="col-sm-5">Size</dt>
+                    <dd class="col-sm-7">
+                        {% if document.file_size %}
+                            {{ document.file_size|filesizeformat }}
+                        {% else %}
+                            -
+                        {% endif %}
+                    </dd>
+                    <dt class="col-sm-5">SHA256</dt>
+                    <dd class="col-sm-7 text-break">{{ document.file_hash|default:'-' }}</dd>
                     <dt class="col-sm-5">File</dt>
                     <dd class="col-sm-7"><a href="{{ document.file.url }}">Download</a></dd>
                 </dl>

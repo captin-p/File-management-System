@@ -52,7 +52,9 @@ File-management-System/
 - Upload PDF and image files up to 10 MB
 - Department and optional unit ownership for each document
 - Document type and tag metadata for faceted search
-- Local file storage under `media/documents/`
+- Local file storage under `media/storage/{department}/{year}/{document_type}/`
+- UUID file names with original filename, size, and SHA256 hash tracked in the database
+- Duplicate upload prevention by file hash
 - Paginated document list for responsive browsing
 - Archive browser by department, year, and document type
 - Search by title, description, and OCR text
@@ -72,6 +74,9 @@ The `Document` model includes:
 - `title`
 - `description`
 - `file`
+- `original_filename`
+- `file_size`
+- `file_hash`
 - `document_type`
 - `department`
 - `unit`
@@ -87,6 +92,18 @@ The `Document` model includes:
 OCR work is tracked in `OCRJob` records with queued, processing, completed, and failed states.
 
 Document activity is tracked in `AuditLog` records with actor, action, timestamp, IP address, user agent, and structured metadata.
+
+## File Storage
+
+New uploads are stored below `MEDIA_ROOT` with this layout:
+
+```text
+storage/{department}/{year}/{document_type}/{document_uuid}.{extension}
+```
+
+The database keeps the original uploaded filename, byte size, and SHA256 hash. The upload form rejects files whose hash already exists, and the stored file is re-read after save or relocation to confirm size/hash integrity.
+
+If OCR changes the detected document type during upload, the file is automatically moved from the initial `other` folder into the final document type folder.
 
 ## Setup
 
@@ -278,7 +295,7 @@ python manage.py rebuild_search_index --document-id <uuid>
 - PostgreSQL search uses a materialized weighted `tsvector` column with a GIN index for fast OCR-backed searches.
 - SQLite development mode falls back to direct text filtering so the project remains easy to run locally.
 - OCR runs from a queue-backed worker process, so uploads do not block on expensive PDF/image extraction.
-- Database indexes are added on title, created time, uploader plus created time, department/unit plus created time, OCR status plus created time, and document type plus created time.
+- Database indexes are added on title, file hash, created time, uploader plus created time, department/unit plus created time, OCR status plus created time, and document type plus created time.
 
 ## Access Rules
 

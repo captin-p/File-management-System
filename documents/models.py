@@ -1,16 +1,14 @@
-import os
 import uuid
-from pathlib import Path
 
 from django.conf import settings
 from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector, SearchVectorField
 from django.core.exceptions import ValidationError
 from django.db import connection, models
 from django.db.models import F, Q
-from django.utils.text import get_valid_filename
 
 from accounts.models import Department, Unit
 
+from .storage import apply_file_metadata, document_file_upload_path
 from .validators import validate_document_file
 
 
@@ -59,10 +57,7 @@ class AuditAction(models.TextChoices):
 
 
 def document_upload_path(instance, filename):
-    extension = Path(filename).suffix.lower()
-    safe_name = get_valid_filename(Path(filename).stem)[:80]
-    generated_name = f"{safe_name or 'document'}-{uuid.uuid4().hex}{extension}"
-    return os.path.join('documents', generated_name)
+    return document_file_upload_path(instance, filename)
 
 
 class DocumentQuerySet(models.QuerySet):
@@ -72,6 +67,8 @@ class DocumentQuerySet(models.QuerySet):
             'title',
             'description',
             'file',
+            'original_filename',
+            'file_size',
             'created_at',
             'updated_at',
             'ocr_status',
@@ -129,6 +126,9 @@ class Document(models.Model):
     title = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     file = models.FileField(upload_to=document_upload_path, validators=[validate_document_file])
+    original_filename = models.CharField(max_length=255, blank=True, default='')
+    file_size = models.PositiveBigIntegerField(null=True, blank=True)
+    file_hash = models.CharField(max_length=64, blank=True, default='', db_index=True)
     document_type = models.CharField(max_length=20, choices=DOC_TYPE_CHOICES, default='other')
     ocr_text = models.TextField(blank=True)
     search_vector = SearchVectorField(null=True, editable=False)
@@ -174,6 +174,13 @@ class Document(models.Model):
             models.Index(fields=['ocr_status', 'created_at']),
             models.Index(fields=['document_type', 'created_at']),
         ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['file_hash'],
+                condition=~Q(file_hash=''),
+                name='unique_document_file_hash',
+            ),
+        ]
         verbose_name = 'Document'
         verbose_name_plural = 'Documents'
 
@@ -183,6 +190,24 @@ class Document(models.Model):
     def clean(self):
         if self.unit_id and self.department_id and self.unit.department_id != self.department_id:
             raise ValidationError({'unit': 'Selected unit must belong to the selected department.'})
+        if self.file_hash:
+            duplicate = self.__class__.objects.filter(file_hash=self.file_hash).exclude(pk=self.pk).first()
+            if duplicate:
+                raise ValidationError({'file': f'This file was already uploaded as "{duplicate.title}".'})
+
+    def _file_changed(self):
+        if self._state.adding or not self.pk:
+            return True
+        previous_file = self.__class__.objects.filter(pk=self.pk).values_list('file', flat=True).first()
+        return previous_file != self.file.name
+
+    def save(self, *args, **kwargs):
+        if self.file and self._file_changed():
+            apply_file_metadata(self, self.file)
+            update_fields = kwargs.get('update_fields')
+            if update_fields is not None:
+                kwargs['update_fields'] = set(update_fields) | {'original_filename', 'file_size', 'file_hash'}
+        super().save(*args, **kwargs)
 
 
 class OCRJob(models.Model):

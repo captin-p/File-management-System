@@ -1,11 +1,13 @@
+import hashlib
 import shutil
 from pathlib import Path
 from io import StringIO
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.core.management import call_command
+from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.core.management import call_command
 from django.db import connection
 from django.test import TestCase, override_settings
 from django.urls import reverse
@@ -13,6 +15,7 @@ from django.urls import reverse
 from accounts.models import Company, Department, Unit
 
 from .models import AuditAction, AuditLog, Document, OCRJob, OCRJobStatus, OCRStatus, Tag
+from .storage import validate_document_file_integrity
 
 User = get_user_model()
 TEST_MEDIA_ROOT = Path(__file__).resolve().parent.parent / '.test_media'
@@ -109,13 +112,20 @@ class DocumentAccessTest(TestCase):
             uploaded_by=uploaded_by,
             department=department,
             unit=unit,
-            file=SimpleUploadedFile(f'{title.lower().replace(" ", "-")}.pdf', b'%PDF-1.4 sample', content_type='application/pdf'),
+            file=SimpleUploadedFile(
+                f'{title.lower().replace(" ", "-")}.pdf',
+                self._file_content(title),
+                content_type='application/pdf',
+            ),
         )
         if tags:
             for tag in tags:
                 tag_obj, _ = Tag.objects.get_or_create(name=tag)
                 document.tags.add(tag_obj)
         return document
+
+    def _file_content(self, title):
+        return f'%PDF-1.4 {title}'.encode()
 
     def test_dashboard_requires_login(self):
         response = self.client.get(reverse('documents:dashboard'))
@@ -183,6 +193,7 @@ class DocumentAccessTest(TestCase):
         self.payroll_doc.refresh_from_db()
         self.assertEqual(self.payroll_doc.title, 'Payroll Register Revised')
         self.assertEqual(self.payroll_doc.document_type, 'policy')
+        self.assertIn(f'/policy/{self.payroll_doc.pk}.pdf', self.payroll_doc.file.name)
         self.assertEqual(sorted(self.payroll_doc.tags.values_list('name', flat=True)), ['payroll', 'revised'])
         edit_log = self.payroll_doc.audit_logs.get(action=AuditAction.EDIT, actor=self.staff)
         self.assertIn('title', edit_log.metadata['changed_fields'])
@@ -222,6 +233,26 @@ class DocumentAccessTest(TestCase):
                 actor=self.staff,
             ).exists()
         )
+
+    def test_document_files_are_stored_by_department_year_and_type(self):
+        expected_prefix = f'storage/{self.finance.slug}/{self.payroll_doc.created_at.year}/report/'
+
+        self.assertTrue(self.payroll_doc.file.name.startswith(expected_prefix))
+        self.assertEqual(Path(self.payroll_doc.file.name).name, f'{self.payroll_doc.pk}.pdf')
+        self.assertEqual(self.payroll_doc.original_filename, 'payroll-register.pdf')
+        self.assertEqual(self.payroll_doc.file_size, len(self._file_content('Payroll Register')))
+        self.assertEqual(
+            self.payroll_doc.file_hash,
+            hashlib.sha256(self._file_content('Payroll Register')).hexdigest(),
+        )
+
+    def test_document_file_integrity_validation_uses_hash_and_size(self):
+        self.assertTrue(validate_document_file_integrity(self.payroll_doc))
+
+        self.payroll_doc.file_hash = '0' * 64
+
+        with self.assertRaisesMessage(ValidationError, 'Stored file hash does not match'):
+            validate_document_file_integrity(self.payroll_doc)
 
     def test_admin_can_filter_document_list_by_department(self):
         self.client.login(username='admin', password='secret123')
@@ -316,6 +347,7 @@ class DocumentAccessTest(TestCase):
     @patch('documents.views.process_document_ocr')
     def test_upload_scans_and_prefills_metadata_form(self, process_document_ocr_mock):
         self.client.login(username='admin', password='secret123')
+        uploaded_content = b'%PDF-1.4 sample invoice'
 
         def mark_ocr_complete(document):
             document.ocr_text = 'Invoice 4242\nBill to Acme Corp\nTotal due 240.00'
@@ -331,7 +363,7 @@ class DocumentAccessTest(TestCase):
             {
                 'department': self.finance.pk,
                 'unit': self.payroll.pk,
-                'file': SimpleUploadedFile('invoice.pdf', b'%PDF-1.4 sample', content_type='application/pdf'),
+                'file': SimpleUploadedFile('invoice.pdf', uploaded_content, content_type='application/pdf'),
             },
             follow=True,
         )
@@ -344,6 +376,11 @@ class DocumentAccessTest(TestCase):
         self.assertEqual(document.ocr_status, OCRStatus.COMPLETED)
         self.assertEqual(document.ocr_text, 'Invoice 4242\nBill to Acme Corp\nTotal due 240.00')
         self.assertEqual(document.document_type, 'invoice')
+        self.assertEqual(document.original_filename, 'invoice.pdf')
+        self.assertEqual(document.file_size, len(uploaded_content))
+        self.assertEqual(document.file_hash, hashlib.sha256(uploaded_content).hexdigest())
+        self.assertTrue(document.file.name.startswith(f'storage/{self.finance.slug}/{document.created_at.year}/invoice/'))
+        self.assertEqual(Path(document.file.name).name, f'{document.pk}.pdf')
         self.assertIn('Bill to Acme Corp', document.description)
         self.assertEqual(sorted(document.tags.values_list('name', flat=True)), ['acme', 'bill', 'corp', 'due'])
         self.assertEqual(document.ocr_jobs.count(), 0)
@@ -352,6 +389,25 @@ class DocumentAccessTest(TestCase):
         self.assertEqual(upload_log.metadata['ocr_status'], OCRStatus.COMPLETED)
         self.assertContains(response, 'OCR filled these fields from the uploaded file.')
         self.assertContains(response, 'OCR scanned the file and filled metadata suggestions for review.')
+
+    def test_upload_rejects_duplicate_file_hash(self):
+        self.client.login(username='admin', password='secret123')
+
+        response = self.client.post(
+            reverse('documents:upload_document'),
+            {
+                'department': self.finance.pk,
+                'unit': self.payroll.pk,
+                'file': SimpleUploadedFile(
+                    'payroll-copy.pdf',
+                    self._file_content('Payroll Register'),
+                    content_type='application/pdf',
+                ),
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'This file was already uploaded as &quot;Payroll Register&quot;.')
 
     def test_upload_rejects_files_over_ten_megabytes(self):
         self.client.login(username='admin', password='secret123')

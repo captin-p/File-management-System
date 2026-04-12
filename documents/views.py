@@ -1,6 +1,6 @@
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.core.exceptions import PermissionDenied
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.db.models import Count
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, redirect
@@ -11,6 +11,7 @@ from django.views.generic import CreateView, DeleteView, DetailView, ListView, T
 from .forms import DocumentMetadataForm, DocumentSearchForm, DocumentUploadForm
 from .models import AuditAction, DOC_TYPE_CHOICES, Document, OCRStatus
 from .services import apply_ocr_metadata_suggestions, log_document_audit, process_document_ocr
+from .storage import relocate_document_file, validate_document_file_integrity
 from .utils import (
     apply_document_filters,
     deletable_documents_for_user,
@@ -125,11 +126,30 @@ class DocumentUploadView(LoginRequiredMixin, UserScopedFormMixin, CreateView):
             initial.setdefault('unit', self.request.user.unit_id)
         return initial
 
+    def _discard_invalid_upload(self, form, error):
+        if getattr(self, 'object', None):
+            if self.object.file:
+                self.object.file.delete(save=False)
+            self.object.delete()
+        form.add_error('file', error)
+        return self.form_invalid(form)
+
     def form_valid(self, form):
         form.instance.uploaded_by = self.request.user
         self.object = form.save()
+        try:
+            validate_document_file_integrity(self.object)
+        except ValidationError as exc:
+            return self._discard_invalid_upload(form, exc)
+
         ocr_status = process_document_ocr(self.object)
         suggestions = apply_ocr_metadata_suggestions(self.object)
+        try:
+            relocate_document_file(self.object)
+            validate_document_file_integrity(self.object)
+        except ValidationError as exc:
+            return self._discard_invalid_upload(form, exc)
+
         messages.success(self.request, 'File uploaded successfully.')
         if ocr_status == OCRStatus.COMPLETED:
             messages.info(self.request, 'OCR scanned the file and filled metadata suggestions for review.')
@@ -147,6 +167,9 @@ class DocumentUploadView(LoginRequiredMixin, UserScopedFormMixin, CreateView):
                 'ocr_status': ocr_status,
                 'suggested_tags': suggestions.get('tags', []),
                 'document_type': self.object.document_type,
+                'file_hash': self.object.file_hash,
+                'file_size': self.object.file_size,
+                'original_filename': self.object.original_filename,
             },
         )
         return redirect(f"{reverse('documents:edit_document', args=[self.object.pk])}?prefill=1")
@@ -212,7 +235,13 @@ class DocumentUpdateView(LoginRequiredMixin, UserScopedFormMixin, UpdateView):
 
     def form_valid(self, form):
         changed_fields = list(form.changed_data)
-        response = super().form_valid(form)
+        self.object = form.save()
+        if {'department', 'document_type'} & set(changed_fields):
+            try:
+                relocate_document_file(self.object)
+            except ValidationError as exc:
+                form.add_error(None, exc)
+                return self.form_invalid(form)
         log_document_audit(
             AuditAction.EDIT,
             document=self.object,
@@ -222,7 +251,7 @@ class DocumentUpdateView(LoginRequiredMixin, UserScopedFormMixin, UpdateView):
             metadata={'changed_fields': changed_fields},
         )
         messages.success(self.request, 'Document details updated successfully.')
-        return response
+        return redirect(self.get_success_url())
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
@@ -254,6 +283,8 @@ class DocumentDeleteView(LoginRequiredMixin, DeleteView):
                 'title': self.object.title,
                 'department': self.object.department.name if self.object.department else None,
                 'unit': self.object.unit.name if self.object.unit else None,
+                'original_filename': self.object.original_filename,
+                'file_hash': self.object.file_hash,
             },
         )
         if self.object.file:
@@ -275,6 +306,9 @@ def _serialize_document(document, request, *, include_body=False):
         'created_at': document.created_at.isoformat(),
         'updated_at': document.updated_at.isoformat(),
         'file_url': request.build_absolute_uri(document.file.url) if document.file else None,
+        'original_filename': document.original_filename,
+        'file_size': document.file_size,
+        'file_hash': document.file_hash,
         'tags': [tag.name for tag in document.tags.all()],
     }
     if include_body:
