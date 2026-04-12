@@ -1,7 +1,9 @@
 import logging
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.conf import settings
 from django.contrib.postgres.search import SearchVector
+from django.db.models import Q
 from django.http import Http404, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from .forms import DocumentUploadForm, DocumentMetadataForm, DocumentSearchForm
@@ -76,7 +78,14 @@ def document_list(request):
     if search_form.is_valid():
         data = search_form.cleaned_data
         if data.get('query'):
-            query = query.annotate(search=SearchVector('title', 'description', 'ocr_text')).filter(search=data['query'])
+            if settings.DATABASES['default']['ENGINE'] == 'django.db.backends.postgresql':
+                query = query.annotate(search=SearchVector('title', 'description', 'ocr_text')).filter(search=data['query'])
+            else:
+                query = query.filter(
+                    Q(title__icontains=data['query']) |
+                    Q(description__icontains=data['query']) |
+                    Q(ocr_text__icontains=data['query'])
+                )
         if data.get('tags'):
             for tag in [tag.strip().lower() for tag in data['tags'].split(',') if tag.strip()]:
                 query = query.filter(tags__name__icontains=tag)
@@ -115,7 +124,7 @@ def browse_documents(request, department_slug=None, year=None, document_type=Non
         documents = documents.filter(department__slug=department_slug)
         selected_row = documents.values('department__name', 'department__slug').first()
         selected_department = {'name': selected_row['department__name'], 'slug': selected_row['department__slug']} if selected_row else None
-        years = list(documents.dates('upload_date', 'year', order='DESC'))
+        years = [date.year for date in documents.dates('upload_date', 'year', order='DESC')]
 
     if selected_department and year:
         documents = documents.filter(upload_date__year=year)
@@ -157,6 +166,37 @@ def delete_document(request, pk):
 @login_required
 def document_api_list(request):
     documents = filter_documents_for_user(request.user)
+    search = request.GET.get('q')
+    tags = request.GET.get('tags')
+    department = request.GET.get('department')
+    unit = request.GET.get('unit')
+    document_type = request.GET.get('document_type')
+    date_from = request.GET.get('date_from')
+    date_to = request.GET.get('date_to')
+
+    if search:
+        if settings.DATABASES['default']['ENGINE'] == 'django.db.backends.postgresql':
+            documents = documents.annotate(search_vector=SearchVector('title', 'description', 'ocr_text')).filter(search_vector=search)
+        else:
+            documents = documents.filter(
+                Q(title__icontains=search) |
+                Q(description__icontains=search) |
+                Q(ocr_text__icontains=search)
+            )
+    if tags:
+        for tag in [tag.strip().lower() for tag in tags.split(',') if tag.strip()]:
+            documents = documents.filter(tags__name__icontains=tag)
+    if department:
+        documents = documents.filter(department__slug=department)
+    if unit:
+        documents = documents.filter(unit__slug=unit)
+    if document_type:
+        documents = documents.filter(document_type=document_type)
+    if date_from:
+        documents = documents.filter(upload_date__gte=date_from)
+    if date_to:
+        documents = documents.filter(upload_date__lte=date_to)
+
     payload = [
         {
             'id': document.pk,
@@ -165,8 +205,9 @@ def document_api_list(request):
             'unit': document.unit.name if document.unit else None,
             'document_type': document.document_type,
             'upload_date': document.upload_date.isoformat(),
+            'file_url': request.build_absolute_uri(document.file.url) if document.file else None,
         }
-        for document in documents[:50]
+        for document in documents.distinct()[:50]
     ]
     return JsonResponse({'documents': payload})
 

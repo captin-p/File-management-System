@@ -25,3 +25,39 @@ class DocumentWorkflowTest(TestCase):
         self.client.logout()
         response = self.client.get('/api/documents/')
         self.assertEqual(response.status_code, 302)
+
+    def test_browse_documents_returns_department_bucket(self):
+        document = Document.objects.create(
+            file=SimpleUploadedFile('test.pdf', b'pdf content', content_type='application/pdf'),
+            title='Salary Report',
+            department=self.manager.department,
+            unit=self.manager.unit,
+            document_type='report',
+            created_by=self.manager,
+        )
+        response = self.client.get(f'/browse/{self.manager.department.slug}/')
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, self.manager.department.name)
+
+        year = document.upload_date.year
+        response = self.client.get(f'/browse/{self.manager.department.slug}/{year}/report/')
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Salary Report')
+
+    def test_document_api_list_filters_by_tag(self):
+        document = Document.objects.create(
+            file=SimpleUploadedFile('test2.pdf', b'pdf content', content_type='application/pdf'),
+            title='HR Policy',
+            department=self.manager.department,
+            unit=self.manager.unit,
+            document_type='policy',
+            created_by=self.manager,
+        )
+        tag = Tag.objects.create(name='compliance')
+        document.tags.add(tag)
+
+        response = self.client.get('/api/documents/?tags=compliance')
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(len(data['documents']), 1)
+        self.assertEqual(data['documents'][0]['title'], 'HR Policy')

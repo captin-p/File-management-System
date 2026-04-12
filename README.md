@@ -49,6 +49,8 @@ A local Django-based Document Management System with OCR, department-level acces
    - `POSTGRES_HOST`
    - `POSTGRES_PORT`
 
+   For local tests without PostgreSQL, set `DJANGO_USE_SQLITE=True`.
+
 5. Run migrations and create a superuser:
    ```bash
    python manage.py migrate
