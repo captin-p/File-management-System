@@ -49,6 +49,15 @@ class OCRJobStatus(models.TextChoices):
     FAILED = 'failed', 'Failed'
 
 
+class AuditAction(models.TextChoices):
+    UPLOAD = 'upload', 'Upload'
+    VIEW = 'view', 'View'
+    EDIT = 'edit', 'Edit'
+    DELETE = 'delete', 'Delete'
+    OCR_QUEUE = 'ocr_queue', 'Queue OCR'
+    OCR_PROCESS = 'ocr_process', 'Process OCR'
+
+
 def document_upload_path(instance, filename):
     extension = Path(filename).suffix.lower()
     safe_name = get_valid_filename(Path(filename).stem)[:80]
@@ -203,3 +212,41 @@ class OCRJob(models.Model):
 
     def __str__(self):
         return f'{self.document_id} / {self.status}'
+
+
+class AuditLog(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    document = models.ForeignKey(
+        Document,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='audit_logs',
+    )
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='document_audit_logs',
+    )
+    action = models.CharField(max_length=30, choices=AuditAction.choices)
+    message = models.TextField(blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['action', 'created_at']),
+            models.Index(fields=['document', 'created_at']),
+            models.Index(fields=['actor', 'created_at']),
+        ]
+        verbose_name = 'Audit log'
+        verbose_name_plural = 'Audit logs'
+
+    def __str__(self):
+        actor = self.actor or 'system'
+        return f'{self.get_action_display()} / {actor} / {self.created_at:%Y-%m-%d %H:%M}'

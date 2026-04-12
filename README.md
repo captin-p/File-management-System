@@ -59,6 +59,7 @@ File-management-System/
 - Role-based access by department scope
 - Upload-first OCR flow that scans files and pre-fills metadata for review
 - Background OCR job queue for bulk imports and retry processing
+- Audit trail for document uploads, views, edits, deletes, and OCR processing
 - JSON API for document list and detail access
 - Materialized PostgreSQL full-text search index when PostgreSQL is enabled
 - SQLite fallback for local development
@@ -84,6 +85,8 @@ The `Document` model includes:
 - `updated_at`
 
 OCR work is tracked in `OCRJob` records with queued, processing, completed, and failed states.
+
+Document activity is tracked in `AuditLog` records with actor, action, timestamp, IP address, user agent, and structured metadata.
 
 ## Setup
 
@@ -237,6 +240,19 @@ Target specific statuses or documents:
 python manage.py reprocess_ocr --status failed --status skipped
 python manage.py reprocess_ocr --document-id <uuid> --force
 ```
+
+## Audit Trail
+
+Document detail pages show recent activity for that document. Admin users can inspect the full audit trail in Django admin under `Audit logs`.
+
+Tracked actions include:
+
+- Upload
+- View
+- Edit
+- Delete
+- OCR queue
+- OCR process
 
 ## Search Index Maintenance
 

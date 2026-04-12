@@ -12,7 +12,7 @@ from django.urls import reverse
 
 from accounts.models import Company, Department, Unit
 
-from .models import Document, OCRJob, OCRJobStatus, OCRStatus, Tag
+from .models import AuditAction, AuditLog, Document, OCRJob, OCRJobStatus, OCRStatus, Tag
 
 User = get_user_model()
 TEST_MEDIA_ROOT = Path(__file__).resolve().parent.parent / '.test_media'
@@ -184,6 +184,8 @@ class DocumentAccessTest(TestCase):
         self.assertEqual(self.payroll_doc.title, 'Payroll Register Revised')
         self.assertEqual(self.payroll_doc.document_type, 'policy')
         self.assertEqual(sorted(self.payroll_doc.tags.values_list('name', flat=True)), ['payroll', 'revised'])
+        edit_log = self.payroll_doc.audit_logs.get(action=AuditAction.EDIT, actor=self.staff)
+        self.assertIn('title', edit_log.metadata['changed_fields'])
         self.assertEqual(teammate_response.status_code, 404)
 
     def test_manager_can_delete_department_document(self):
@@ -193,6 +195,13 @@ class DocumentAccessTest(TestCase):
 
         self.assertRedirects(response, reverse('documents:document_list'))
         self.assertFalse(Document.objects.filter(pk=self.audit_doc.pk).exists())
+        self.assertTrue(
+            AuditLog.objects.filter(
+                action=AuditAction.DELETE,
+                actor=self.manager,
+                metadata__title='Audit Notes',
+            ).exists()
+        )
 
     def test_manager_cannot_access_other_department_document(self):
         self.client.login(username='manager', password='secret123')
@@ -200,6 +209,19 @@ class DocumentAccessTest(TestCase):
         response = self.client.get(reverse('documents:document_detail', args=[self.legal_doc.pk]))
 
         self.assertEqual(response.status_code, 404)
+
+    def test_document_detail_records_view_audit_log(self):
+        self.client.login(username='staff', password='secret123')
+
+        response = self.client.get(reverse('documents:document_detail', args=[self.payroll_doc.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(
+            self.payroll_doc.audit_logs.filter(
+                action=AuditAction.VIEW,
+                actor=self.staff,
+            ).exists()
+        )
 
     def test_admin_can_filter_document_list_by_department(self):
         self.client.login(username='admin', password='secret123')
@@ -326,6 +348,8 @@ class DocumentAccessTest(TestCase):
         self.assertEqual(sorted(document.tags.values_list('name', flat=True)), ['acme', 'bill', 'corp', 'due'])
         self.assertEqual(document.ocr_jobs.count(), 0)
         process_document_ocr_mock.assert_called_once()
+        upload_log = document.audit_logs.get(action=AuditAction.UPLOAD, actor=self.admin)
+        self.assertEqual(upload_log.metadata['ocr_status'], OCRStatus.COMPLETED)
         self.assertContains(response, 'OCR filled these fields from the uploaded file.')
         self.assertContains(response, 'OCR scanned the file and filled metadata suggestions for review.')
 
@@ -387,6 +411,9 @@ class DocumentAccessTest(TestCase):
         call_command('queue_ocr_jobs', '--document-id', self.payroll_doc.pk, stdout=second_stdout)
 
         self.assertEqual(self.payroll_doc.ocr_jobs.count(), 1)
+        self.assertTrue(
+            self.payroll_doc.audit_logs.filter(action=AuditAction.OCR_QUEUE).exists()
+        )
         self.assertIn('Queued 1 OCR job(s). skipped_active=0', first_stdout.getvalue())
         self.assertIn('Queued 0 OCR job(s). skipped_active=1', second_stdout.getvalue())
 
@@ -412,6 +439,9 @@ class DocumentAccessTest(TestCase):
         self.assertEqual(job.attempts, 1)
         self.assertEqual(self.payroll_doc.ocr_status, OCRStatus.COMPLETED)
         self.assertEqual(self.payroll_doc.ocr_text, 'queued payroll text')
+        self.assertTrue(
+            self.payroll_doc.audit_logs.filter(action=AuditAction.OCR_PROCESS).exists()
+        )
         self.assertIn('Processed 1 OCR job(s). completed=1, failed=0', stdout.getvalue())
 
     def test_rebuild_search_index_command_matches_database_backend(self):

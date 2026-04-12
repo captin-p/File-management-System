@@ -9,7 +9,7 @@ from django.db import connection, transaction
 from django.db.models import F
 from django.utils import timezone
 
-from .models import DOC_TYPE_CHOICES, Document, OCRJob, OCRJobStatus, OCRStatus, Tag
+from .models import AuditAction, AuditLog, DOC_TYPE_CHOICES, Document, OCRJob, OCRJobStatus, OCRStatus, Tag
 
 logger = logging.getLogger(__name__)
 ACTIVE_OCR_JOB_STATUSES = [OCRJobStatus.QUEUED, OCRJobStatus.PROCESSING]
@@ -48,6 +48,32 @@ DOCUMENT_TYPE_KEYWORDS = {
     'report': {'report', 'summary', 'analysis', 'findings', 'quarterly', 'annual'},
     'memo': {'memo', 'memorandum', 'notice', 'attention', 'subject'},
 }
+
+
+def _request_ip_address(request):
+    if not request:
+        return None
+    forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR', '')
+    if forwarded_for:
+        return forwarded_for.split(',')[0].strip()
+    return request.META.get('REMOTE_ADDR')
+
+
+def log_document_audit(action, *, document=None, user=None, request=None, message='', metadata=None):
+    actor = user if getattr(user, 'is_authenticated', False) else None
+    user_agent = ''
+    if request:
+        user_agent = request.META.get('HTTP_USER_AGENT', '')[:255]
+
+    return AuditLog.objects.create(
+        document=document,
+        actor=actor,
+        action=action,
+        message=message,
+        metadata=metadata or {},
+        ip_address=_request_ip_address(request),
+        user_agent=user_agent,
+    )
 
 
 def _configure_tesseract(pytesseract):
@@ -257,7 +283,14 @@ def enqueue_document_ocr(document, *, force=False):
         document.ocr_status = OCRStatus.PENDING
         document.ocr_error = ''
 
-    return OCRJob.objects.create(document=document), True
+    job = OCRJob.objects.create(document=document)
+    log_document_audit(
+        AuditAction.OCR_QUEUE,
+        document=document,
+        message='OCR job queued.',
+        metadata={'job_id': str(job.pk), 'force': force},
+    )
+    return job, True
 
 
 def _queued_job_queryset(document_id=None):
@@ -320,6 +353,17 @@ def process_ocr_job(job):
 
     job.finished_at = timezone.now()
     job.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
+    log_document_audit(
+        AuditAction.OCR_PROCESS,
+        document=document,
+        message='OCR job processed.',
+        metadata={
+            'job_id': str(job.pk),
+            'job_status': job.status,
+            'document_ocr_status': document.ocr_status,
+            'attempts': job.attempts,
+        },
+    )
     return job
 
 

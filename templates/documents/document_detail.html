@@ -72,4 +72,34 @@
         {% endif %}
     </div>
 </div>
+
+<div class="card shadow-sm mt-4">
+    <div class="card-body">
+        <h2 class="h5">Recent Activity</h2>
+        <div class="table-responsive">
+            <table class="table table-sm align-middle mb-0">
+                <thead>
+                    <tr>
+                        <th>Action</th>
+                        <th>User</th>
+                        <th>When</th>
+                        <th>Note</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for log in audit_logs %}
+                    <tr>
+                        <td>{{ log.get_action_display }}</td>
+                        <td>{{ log.actor|default:'System' }}</td>
+                        <td>{{ log.created_at|date:'Y-m-d H:i' }}</td>
+                        <td>{{ log.message|default:'-' }}</td>
+                    </tr>
+                {% empty %}
+                    <tr><td colspan="4" class="text-muted">No activity recorded yet.</td></tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
 {% endblock %}

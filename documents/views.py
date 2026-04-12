@@ -9,8 +9,8 @@ from django.views import View
 from django.views.generic import CreateView, DeleteView, DetailView, ListView, TemplateView, UpdateView
 
 from .forms import DocumentMetadataForm, DocumentSearchForm, DocumentUploadForm
-from .models import DOC_TYPE_CHOICES, Document, OCRStatus
-from .services import apply_ocr_metadata_suggestions, process_document_ocr
+from .models import AuditAction, DOC_TYPE_CHOICES, Document, OCRStatus
+from .services import apply_ocr_metadata_suggestions, log_document_audit, process_document_ocr
 from .utils import (
     apply_document_filters,
     deletable_documents_for_user,
@@ -137,6 +137,18 @@ class DocumentUploadView(LoginRequiredMixin, UserScopedFormMixin, CreateView):
             messages.warning(self.request, f'OCR status: {self.object.get_ocr_status_display()}. {self.object.ocr_error}')
         if suggestions.get('tags'):
             messages.info(self.request, f"Suggested tags: {', '.join(suggestions['tags'])}.")
+        log_document_audit(
+            AuditAction.UPLOAD,
+            document=self.object,
+            user=self.request.user,
+            request=self.request,
+            message='Document uploaded and scanned.',
+            metadata={
+                'ocr_status': ocr_status,
+                'suggested_tags': suggestions.get('tags', []),
+                'document_type': self.object.document_type,
+            },
+        )
         return redirect(f"{reverse('documents:edit_document', args=[self.object.pk])}?prefill=1")
 
 
@@ -168,10 +180,22 @@ class DocumentDetailView(AccessibleDocumentMixin, DetailView):
             Document.objects.select_related('uploaded_by', 'department', 'unit').prefetch_related('tags'),
         )
 
+    def get(self, request, *args, **kwargs):
+        response = super().get(request, *args, **kwargs)
+        log_document_audit(
+            AuditAction.VIEW,
+            document=self.object,
+            user=request.user,
+            request=request,
+            message='Document detail viewed.',
+        )
+        return response
+
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         context['can_edit'] = user_can_edit_document(self.request.user, self.object)
         context['can_delete'] = user_can_delete_document(self.request.user, self.object)
+        context['audit_logs'] = self.object.audit_logs.select_related('actor')[:10]
         return context
 
 
@@ -187,7 +211,16 @@ class DocumentUpdateView(LoginRequiredMixin, UserScopedFormMixin, UpdateView):
         )
 
     def form_valid(self, form):
+        changed_fields = list(form.changed_data)
         response = super().form_valid(form)
+        log_document_audit(
+            AuditAction.EDIT,
+            document=self.object,
+            user=self.request.user,
+            request=self.request,
+            message='Document metadata updated.',
+            metadata={'changed_fields': changed_fields},
+        )
         messages.success(self.request, 'Document details updated successfully.')
         return response
 
@@ -210,6 +243,19 @@ class DocumentDeleteView(LoginRequiredMixin, DeleteView):
         return deletable_documents_for_user(self.request.user, Document.objects.select_related('department', 'unit', 'uploaded_by'))
 
     def form_valid(self, form):
+        log_document_audit(
+            AuditAction.DELETE,
+            document=self.object,
+            user=self.request.user,
+            request=self.request,
+            message='Document deleted.',
+            metadata={
+                'document_id': str(self.object.pk),
+                'title': self.object.title,
+                'department': self.object.department.name if self.object.department else None,
+                'unit': self.object.unit.name if self.object.unit else None,
+            },
+        )
         if self.object.file:
             self.object.file.delete(save=False)
         messages.success(self.request, 'Document deleted successfully.')

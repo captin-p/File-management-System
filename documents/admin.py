@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Document, OCRJob, Tag
+from .models import AuditLog, Document, OCRJob, Tag
 
 @admin.register(Tag)
 class TagAdmin(admin.ModelAdmin):
@@ -19,3 +19,16 @@ class OCRJobAdmin(admin.ModelAdmin):
     list_filter = ('status', 'created_at', 'started_at', 'finished_at')
     search_fields = ('document__title', 'document__id', 'error')
     readonly_fields = ('id', 'created_at', 'updated_at', 'started_at', 'finished_at')
+
+@admin.register(AuditLog)
+class AuditLogAdmin(admin.ModelAdmin):
+    list_display = ('action', 'document', 'actor', 'ip_address', 'created_at')
+    list_filter = ('action', 'created_at')
+    search_fields = ('document__title', 'document__id', 'actor__username', 'message')
+    readonly_fields = ('id', 'document', 'actor', 'action', 'message', 'metadata', 'ip_address', 'user_agent', 'created_at')
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
