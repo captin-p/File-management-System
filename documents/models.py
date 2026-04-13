@@ -73,6 +73,7 @@ class DocumentQuerySet(models.QuerySet):
             'updated_at',
             'ocr_status',
             'document_type',
+            'extracted_date',
             'department__name',
             'unit__name',
             'department_id',
@@ -131,6 +132,7 @@ class Document(models.Model):
     file_hash = models.CharField(max_length=64, blank=True, default='', db_index=True)
     document_type = models.CharField(max_length=20, choices=DOC_TYPE_CHOICES, default='other')
     ocr_text = models.TextField(blank=True)
+    extracted_date = models.DateField(null=True, blank=True, db_index=True)
     search_vector = SearchVectorField(null=True, editable=False)
     ocr_status = models.CharField(
         max_length=20,
@@ -173,6 +175,7 @@ class Document(models.Model):
             models.Index(fields=['unit', 'created_at']),
             models.Index(fields=['ocr_status', 'created_at']),
             models.Index(fields=['document_type', 'created_at']),
+            models.Index(fields=['extracted_date', 'created_at']),
         ]
         constraints = [
             models.UniqueConstraint(

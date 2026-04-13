@@ -129,11 +129,12 @@ class DocumentMetadataForm(OrganizationScopedFormMixin, forms.ModelForm):
 
     class Meta:
         model = Document
-        fields = ['title', 'description', 'document_type', 'department', 'unit', 'tags']
+        fields = ['title', 'description', 'document_type', 'extracted_date', 'department', 'unit', 'tags']
         widgets = {
             'title': forms.TextInput(attrs={'placeholder': 'Quarterly finance report'}),
             'description': forms.Textarea(attrs={'rows': 4}),
             'document_type': forms.Select(choices=DOC_TYPE_CHOICES),
+            'extracted_date': forms.DateInput(attrs={'type': 'date'}),
         }
 
     def __init__(self, *args, **kwargs):

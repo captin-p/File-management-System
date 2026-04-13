@@ -1,5 +1,6 @@
 import hashlib
 import shutil
+from datetime import date
 from pathlib import Path
 from io import StringIO
 from unittest.mock import patch
@@ -15,6 +16,7 @@ from django.urls import reverse
 from accounts.models import Company, Department, Unit
 
 from .models import AuditAction, AuditLog, Document, OCRJob, OCRJobStatus, OCRStatus, Tag
+from .services import extracted_dates_from_ocr, suggested_extracted_date_from_ocr
 from .storage import validate_document_file_integrity
 
 User = get_user_model()
@@ -254,6 +256,15 @@ class DocumentAccessTest(TestCase):
         with self.assertRaisesMessage(ValidationError, 'Stored file hash does not match'):
             validate_document_file_integrity(self.payroll_doc)
 
+    def test_ocr_date_extraction_handles_common_formats(self):
+        ocr_text = 'Issued 13/04/2026\nDue 2026-05-01\nSigned April 20, 2026'
+
+        self.assertEqual(
+            extracted_dates_from_ocr(ocr_text),
+            [date(2026, 4, 13), date(2026, 5, 1), date(2026, 4, 20)],
+        )
+        self.assertEqual(suggested_extracted_date_from_ocr(ocr_text), date(2026, 4, 13))
+
     def test_admin_can_filter_document_list_by_department(self):
         self.client.login(username='admin', password='secret123')
 
@@ -281,7 +292,8 @@ class DocumentAccessTest(TestCase):
         self.client.login(username='admin', password='secret123')
         self.payroll_doc.ocr_status = OCRStatus.COMPLETED
         self.payroll_doc.ocr_text = 'payroll values'
-        self.payroll_doc.save(update_fields=['ocr_status', 'ocr_text', 'updated_at'])
+        self.payroll_doc.extracted_date = date(2026, 4, 1)
+        self.payroll_doc.save(update_fields=['ocr_status', 'ocr_text', 'extracted_date', 'updated_at'])
 
         response = self.client.get(
             reverse('documents:document_api_list'),
@@ -295,6 +307,7 @@ class DocumentAccessTest(TestCase):
         self.assertEqual(payload['results'][0]['title'], 'Payroll Register')
         self.assertEqual(payload['results'][0]['ocr_status'], OCRStatus.COMPLETED)
         self.assertEqual(payload['results'][0]['document_type'], 'report')
+        self.assertEqual(payload['results'][0]['extracted_date'], '2026-04-01')
         self.assertEqual(payload['results'][0]['tags'], ['finance', 'payroll'])
 
     def test_document_api_detail_respects_scope(self):
@@ -350,7 +363,7 @@ class DocumentAccessTest(TestCase):
         uploaded_content = b'%PDF-1.4 sample invoice'
 
         def mark_ocr_complete(document):
-            document.ocr_text = 'Invoice 4242\nBill to Acme Corp\nTotal due 240.00'
+            document.ocr_text = 'Invoice 4242\nInvoice Date: 2026-04-13\nBill to Acme Corp\nTotal due 240.00'
             document.ocr_status = OCRStatus.COMPLETED
             document.ocr_error = ''
             document.save(update_fields=['ocr_text', 'ocr_status', 'ocr_error', 'updated_at'])
@@ -374,8 +387,9 @@ class DocumentAccessTest(TestCase):
             f"{reverse('documents:edit_document', args=[document.pk])}?prefill=1",
         )
         self.assertEqual(document.ocr_status, OCRStatus.COMPLETED)
-        self.assertEqual(document.ocr_text, 'Invoice 4242\nBill to Acme Corp\nTotal due 240.00')
+        self.assertEqual(document.ocr_text, 'Invoice 4242\nInvoice Date: 2026-04-13\nBill to Acme Corp\nTotal due 240.00')
         self.assertEqual(document.document_type, 'invoice')
+        self.assertEqual(document.extracted_date, date(2026, 4, 13))
         self.assertEqual(document.original_filename, 'invoice.pdf')
         self.assertEqual(document.file_size, len(uploaded_content))
         self.assertEqual(document.file_hash, hashlib.sha256(uploaded_content).hexdigest())
@@ -387,6 +401,7 @@ class DocumentAccessTest(TestCase):
         process_document_ocr_mock.assert_called_once()
         upload_log = document.audit_logs.get(action=AuditAction.UPLOAD, actor=self.admin)
         self.assertEqual(upload_log.metadata['ocr_status'], OCRStatus.COMPLETED)
+        self.assertEqual(upload_log.metadata['extracted_date'], '2026-04-13')
         self.assertContains(response, 'OCR filled these fields from the uploaded file.')
         self.assertContains(response, 'OCR scanned the file and filled metadata suggestions for review.')
 

@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import shutil
+from datetime import date
 from pathlib import Path
 
 from django.conf import settings
@@ -23,9 +24,11 @@ TAG_STOP_WORDS = {
     'because',
     'been',
     'before',
+    'date',
     'document',
     'from',
     'have',
+    'issued',
     'into',
     'invoice',
     'page',
@@ -48,6 +51,47 @@ DOCUMENT_TYPE_KEYWORDS = {
     'report': {'report', 'summary', 'analysis', 'findings', 'quarterly', 'annual'},
     'memo': {'memo', 'memorandum', 'notice', 'attention', 'subject'},
 }
+MONTH_ALIASES = {
+    'jan': 1,
+    'january': 1,
+    'feb': 2,
+    'february': 2,
+    'mar': 3,
+    'march': 3,
+    'apr': 4,
+    'april': 4,
+    'may': 5,
+    'jun': 6,
+    'june': 6,
+    'jul': 7,
+    'july': 7,
+    'aug': 8,
+    'august': 8,
+    'sep': 9,
+    'sept': 9,
+    'september': 9,
+    'oct': 10,
+    'october': 10,
+    'nov': 11,
+    'november': 11,
+    'dec': 12,
+    'december': 12,
+}
+DATE_PATTERNS = [
+    re.compile(r'\b(?P<year>(?:19|20)\d{2})[-/.](?P<month>0?[1-9]|1[0-2])[-/.](?P<day>0?[1-9]|[12]\d|3[01])\b'),
+    re.compile(r'\b(?P<day>0?[1-9]|[12]\d|3[01])[-/.](?P<month>0?[1-9]|1[0-2])[-/.](?P<year>(?:19|20)\d{2})\b'),
+    re.compile(
+        r'\b(?P<day>0?[1-9]|[12]\d|3[01])\s+'
+        r'(?P<month>jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)'
+        r',?\s+(?P<year>(?:19|20)\d{2})\b',
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r'\b(?P<month>jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)'
+        r'\s+(?P<day>0?[1-9]|[12]\d|3[01]),?\s+(?P<year>(?:19|20)\d{2})\b',
+        re.IGNORECASE,
+    ),
+]
 
 
 def _request_ip_address(request):
@@ -187,14 +231,16 @@ def process_document_ocr(document):
 
     if extracted_text:
         document.ocr_text = extracted_text
+        document.extracted_date = suggested_extracted_date_from_ocr(extracted_text)
         document.ocr_status = OCRStatus.COMPLETED
         document.ocr_error = ''
     else:
         document.ocr_text = ''
+        document.extracted_date = None
         document.ocr_status = OCRStatus.FAILED
         document.ocr_error = 'OCR did not extract readable text from this file.'
 
-    document.save(update_fields=['ocr_text', 'ocr_status', 'ocr_error', 'updated_at'])
+    document.save(update_fields=['ocr_text', 'extracted_date', 'ocr_status', 'ocr_error', 'updated_at'])
     return document.ocr_status
 
 
@@ -223,6 +269,35 @@ def suggested_document_type_from_ocr(ocr_text, fallback='other'):
     return fallback if fallback in dict(DOC_TYPE_CHOICES) else 'other'
 
 
+def _date_from_parts(year, month, day):
+    try:
+        month_value = MONTH_ALIASES.get(str(month).lower(), month)
+        return date(int(year), int(month_value), int(day))
+    except (TypeError, ValueError):
+        return None
+
+
+def extracted_dates_from_ocr(ocr_text):
+    matches = []
+    seen = set()
+    for pattern in DATE_PATTERNS:
+        for match in pattern.finditer(ocr_text):
+            candidate = _date_from_parts(
+                match.group('year'),
+                match.group('month'),
+                match.group('day'),
+            )
+            if candidate and candidate not in seen:
+                seen.add(candidate)
+                matches.append((match.start(), candidate))
+    return [candidate for _, candidate in sorted(matches, key=lambda item: item[0])]
+
+
+def suggested_extracted_date_from_ocr(ocr_text):
+    dates = extracted_dates_from_ocr(ocr_text)
+    return dates[0] if dates else None
+
+
 def suggested_tags_from_ocr(ocr_text, *, limit=6):
     words = re.findall(r'[a-zA-Z][a-zA-Z0-9-]{2,}', ocr_text.lower())
     counts = {}
@@ -243,12 +318,19 @@ def apply_ocr_metadata_suggestions(document):
         if not document.title:
             document.title = suggested_title_from_ocr('', fallback_title)
             document.save(update_fields=['title', 'updated_at'])
-        return {'title': document.title, 'description': document.description, 'document_type': document.document_type, 'tags': []}
+        return {
+            'title': document.title,
+            'description': document.description,
+            'document_type': document.document_type,
+            'extracted_date': document.extracted_date.isoformat() if document.extracted_date else '',
+            'tags': [],
+        }
 
     document.title = suggested_title_from_ocr(ocr_text, fallback_title)
     document.description = suggested_description_from_ocr(ocr_text)
     document.document_type = suggested_document_type_from_ocr(ocr_text, document.document_type)
-    document.save(update_fields=['title', 'description', 'document_type', 'updated_at'])
+    document.extracted_date = suggested_extracted_date_from_ocr(ocr_text)
+    document.save(update_fields=['title', 'description', 'document_type', 'extracted_date', 'updated_at'])
 
     tag_names = suggested_tags_from_ocr(ocr_text)
     if tag_names:
@@ -259,6 +341,7 @@ def apply_ocr_metadata_suggestions(document):
         'title': document.title,
         'description': document.description,
         'document_type': document.document_type,
+        'extracted_date': document.extracted_date.isoformat() if document.extracted_date else '',
         'tags': tag_names,
     }
 
@@ -361,6 +444,7 @@ def process_ocr_job(job):
             'job_id': str(job.pk),
             'job_status': job.status,
             'document_ocr_status': document.ocr_status,
+            'extracted_date': document.extracted_date.isoformat() if document.extracted_date else '',
             'attempts': job.attempts,
         },
     )

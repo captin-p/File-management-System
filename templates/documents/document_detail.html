@@ -48,6 +48,8 @@
                     </dd>
                     <dt class="col-sm-5">OCR</dt>
                     <dd class="col-sm-7">{{ document.get_ocr_status_display }}</dd>
+                    <dt class="col-sm-5">Extracted date</dt>
+                    <dd class="col-sm-7">{{ document.extracted_date|date:'Y-m-d'|default:'-' }}</dd>
                     <dt class="col-sm-5">Created</dt>
                     <dd class="col-sm-7">{{ document.created_at|date:'Y-m-d H:i' }}</dd>
                     <dt class="col-sm-5">Updated</dt>

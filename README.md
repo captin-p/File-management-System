@@ -60,6 +60,7 @@ File-management-System/
 - Search by title, description, and OCR text
 - Role-based access by department scope
 - Upload-first OCR flow that scans files and pre-fills metadata for review
+- OCR metadata extraction for dates, document type, and keyword tags
 - Background OCR job queue for bulk imports and retry processing
 - Audit trail for document uploads, views, edits, deletes, and OCR processing
 - JSON API for document list and detail access
@@ -82,6 +83,7 @@ The `Document` model includes:
 - `unit`
 - `tags`
 - `ocr_text`
+- `extracted_date`
 - `search_vector` - PostgreSQL materialized full-text index field
 - `ocr_status`
 - `ocr_error`
@@ -221,7 +223,9 @@ The API uses the same access scope as the HTML interface.
 
 ## OCR Maintenance
 
-The upload page saves the file first, runs OCR, then opens the metadata form with suggested title, description, document type, and tags. Save that form after review.
+The upload page saves the file first, runs OCR, then opens the metadata form with suggested title, description, document type, extracted date, and tags. Save that form after review.
+
+OCR date extraction supports common numeric and month-name dates such as `2026-04-13`, `13/04/2026`, `13 April 2026`, and `April 13, 2026`.
 
 Queued OCR jobs are available for bulk imports and retries.
 

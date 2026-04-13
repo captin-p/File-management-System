@@ -30,12 +30,17 @@
                         {% for error in form.description.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
                     </div>
                     <div class="row g-3 mb-3">
-                        <div class="col-md-6">
+                        <div class="col-md-4">
                             <label for="{{ form.document_type.id_for_label }}" class="form-label">{{ form.document_type.label }}</label>
                             {{ form.document_type }}
                             {% for error in form.document_type.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
                         </div>
-                        <div class="col-md-6">
+                        <div class="col-md-4">
+                            <label for="{{ form.extracted_date.id_for_label }}" class="form-label">{{ form.extracted_date.label }}</label>
+                            {{ form.extracted_date }}
+                            {% for error in form.extracted_date.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+                        </div>
+                        <div class="col-md-4">
                             <label for="{{ form.tags.id_for_label }}" class="form-label">{{ form.tags.label }}</label>
                             {{ form.tags }}
                             <div class="form-text">{{ form.tags.help_text }}</div>
