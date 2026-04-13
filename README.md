@@ -161,25 +161,41 @@ If OCR changes the detected document type during upload, the file is automatical
    python manage.py migrate
    ```
 
-7. Create an admin user:
+7. Seed the default departments and units:
+
+   ```bash
+   python manage.py seed_organization --company-name "Main Company"
+   ```
+
+8. Create an admin user:
 
    ```bash
    python manage.py createsuperuser
    ```
 
-8. Start the server:
+9. Start the server:
 
    ```bash
    python manage.py runserver
    ```
 
-9. In a second terminal, start the OCR worker for queued bulk/retry jobs:
+10. In a second terminal, start the OCR worker for queued bulk/retry jobs:
 
    ```bash
    python manage.py process_ocr_queue --loop
    ```
 
-10. Open `http://127.0.0.1:8000/`.
+11. Open `http://127.0.0.1:8000/`.
+
+## Organization Seed
+
+Run this command to create the default company, departments, and units:
+
+```bash
+python manage.py seed_organization --company-name "Main Company"
+```
+
+The command is idempotent. It creates missing rows and leaves existing departments or units untouched.
 
 ## Database Configuration
 
