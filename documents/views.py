@@ -53,6 +53,8 @@ class DocumentFilterMixin:
                 unit=data.get('unit'),
                 ocr_status=data.get('ocr_status'),
                 document_type=data.get('document_type'),
+                date_from=data.get('date_from'),
+                date_to=data.get('date_to'),
                 tags=data.get('tags'),
             )
 
@@ -68,6 +70,8 @@ class DocumentFilterMixin:
                 'selected_department_id': '',
                 'selected_unit_id': '',
                 'selected_document_type': '',
+                'selected_date_from': '',
+                'selected_date_to': '',
                 'selected_tags': '',
                 'selected_ocr_status': '',
             }
@@ -78,6 +82,8 @@ class DocumentFilterMixin:
             'selected_department_id': cleaned_data.get('department').pk if cleaned_data.get('department') else '',
             'selected_unit_id': cleaned_data.get('unit').pk if cleaned_data.get('unit') else '',
             'selected_document_type': cleaned_data.get('document_type', ''),
+            'selected_date_from': cleaned_data.get('date_from').isoformat() if cleaned_data.get('date_from') else '',
+            'selected_date_to': cleaned_data.get('date_to').isoformat() if cleaned_data.get('date_to') else '',
             'selected_tags': cleaned_data.get('tags', ''),
             'selected_ocr_status': cleaned_data.get('ocr_status', ''),
         }
@@ -324,6 +330,13 @@ def _serialize_document(document, request, *, include_body=False):
     rank = getattr(document, 'rank', None)
     if rank is not None:
         payload['search_rank'] = float(rank)
+    headline = (
+        getattr(document, 'headline_ocr_text', '') or
+        getattr(document, 'headline_description', '') or
+        getattr(document, 'headline_title', '')
+    )
+    if headline:
+        payload['search_headline'] = headline
     return payload
 
 

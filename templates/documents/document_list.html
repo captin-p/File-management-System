@@ -1,4 +1,5 @@
 {% extends 'base.html' %}
+{% load search_highlights %}
 {% block content %}
 <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-4">
     <div>
@@ -22,6 +23,16 @@
             <div class="col-md-2">
                 <label for="{{ form.document_type.id_for_label }}" class="form-label">{{ form.document_type.label }}</label>
                 {{ form.document_type }}
+            </div>
+            <div class="col-md-2">
+                <label for="{{ form.date_from.id_for_label }}" class="form-label">{{ form.date_from.label }}</label>
+                {{ form.date_from }}
+                {% for error in form.date_from.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
+            </div>
+            <div class="col-md-2">
+                <label for="{{ form.date_to.id_for_label }}" class="form-label">{{ form.date_to.label }}</label>
+                {{ form.date_to }}
+                {% for error in form.date_to.errors %}<div class="text-danger small mt-1">{{ error }}</div>{% endfor %}
             </div>
             <div class="col-md-2">
                 <label for="{{ form.department.id_for_label }}" class="form-label">{{ form.department.label }}</label>
@@ -49,6 +60,7 @@
                 <tr>
                     <th>Title</th>
                     <th>Type</th>
+                    <th>Date</th>
                     <th>Department</th>
                     <th>Unit</th>
                     <th>OCR</th>
@@ -62,12 +74,26 @@
             {% for document in documents %}
                 <tr>
                     <td>
-                        <a href="{% url 'documents:document_detail' document.pk %}" class="fw-semibold text-decoration-none">{{ document.title }}</a>
-                        {% if document.description %}
+                        <a href="{% url 'documents:document_detail' document.pk %}" class="fw-semibold text-decoration-none">
+                            {% if search_query and document.headline_title %}
+                                {{ document.headline_title|search_highlight }}
+                            {% else %}
+                                {{ document.title }}
+                            {% endif %}
+                        </a>
+                        {% if search_query and document.headline_description %}
+                            <div class="small text-muted mt-1">{{ document.headline_description|search_highlight }}</div>
+                        {% elif search_query and document.headline_ocr_text %}
+                            <div class="small text-muted mt-1">OCR: {{ document.headline_ocr_text|search_highlight }}</div>
+                        {% elif document.description %}
                             <div class="small text-muted mt-1">{{ document.description|truncatechars:120 }}</div>
+                        {% endif %}
+                        {% if search_query and document.rank %}
+                            <div class="small text-muted mt-1">Relevance {{ document.rank|floatformat:3 }}</div>
                         {% endif %}
                     </td>
                     <td>{{ document.get_document_type_display }}</td>
+                    <td>{{ document.extracted_date|date:'Y-m-d'|default:'-' }}</td>
                     <td>{{ document.department|default:'-' }}</td>
                     <td>{{ document.unit|default:'-' }}</td>
                     <td>
@@ -98,7 +124,7 @@
                     </td>
                 </tr>
             {% empty %}
-                <tr><td colspan="9" class="text-center py-4">No documents found.</td></tr>
+                <tr><td colspan="10" class="text-center py-4">No documents found.</td></tr>
             {% endfor %}
             </tbody>
         </table>
@@ -110,7 +136,7 @@
         <ul class="pagination mb-0">
             {% if page_obj.has_previous %}
                 <li class="page-item">
-                    <a class="page-link" href="?q={{ search_query }}&tags={{ selected_tags }}&document_type={{ selected_document_type }}&department={{ selected_department_id }}&unit={{ selected_unit_id }}&ocr_status={{ selected_ocr_status }}&page={{ page_obj.previous_page_number }}">Previous</a>
+                    <a class="page-link" href="?q={{ search_query }}&tags={{ selected_tags }}&document_type={{ selected_document_type }}&date_from={{ selected_date_from }}&date_to={{ selected_date_to }}&department={{ selected_department_id }}&unit={{ selected_unit_id }}&ocr_status={{ selected_ocr_status }}&page={{ page_obj.previous_page_number }}">Previous</a>
                 </li>
             {% else %}
                 <li class="page-item disabled"><span class="page-link">Previous</span></li>
@@ -122,7 +148,7 @@
 
             {% if page_obj.has_next %}
                 <li class="page-item">
-                    <a class="page-link" href="?q={{ search_query }}&tags={{ selected_tags }}&document_type={{ selected_document_type }}&department={{ selected_department_id }}&unit={{ selected_unit_id }}&ocr_status={{ selected_ocr_status }}&page={{ page_obj.next_page_number }}">Next</a>
+                    <a class="page-link" href="?q={{ search_query }}&tags={{ selected_tags }}&document_type={{ selected_document_type }}&date_from={{ selected_date_from }}&date_to={{ selected_date_to }}&department={{ selected_department_id }}&unit={{ selected_unit_id }}&ocr_status={{ selected_ocr_status }}&page={{ page_obj.next_page_number }}">Next</a>
                 </li>
             {% else %}
                 <li class="page-item disabled"><span class="page-link">Next</span></li>

@@ -1,7 +1,7 @@
 import uuid
 
 from django.conf import settings
-from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector, SearchVectorField
+from django.contrib.postgres.search import SearchHeadline, SearchQuery, SearchRank, SearchVector, SearchVectorField
 from django.core.exceptions import ValidationError
 from django.db import connection, models
 from django.db.models import F, Q
@@ -22,6 +22,8 @@ DOC_TYPE_CHOICES = [
 ]
 
 SEARCH_CONFIG = 'simple'
+SEARCH_HIGHLIGHT_START = '[[[DMS_HIT_START]]]'
+SEARCH_HIGHLIGHT_END = '[[[DMS_HIT_END]]]'
 
 
 def document_search_vector():
@@ -94,7 +96,40 @@ class DocumentQuerySet(models.QuerySet):
         if connection.vendor == 'postgresql':
             query = SearchQuery(cleaned_term, config=SEARCH_CONFIG, search_type='websearch')
             return (
-                self.annotate(rank=SearchRank(F('search_vector'), query))
+                self.annotate(
+                    rank=SearchRank(F('search_vector'), query, cover_density=True),
+                    headline_title=SearchHeadline(
+                        'title',
+                        query,
+                        config=SEARCH_CONFIG,
+                        start_sel=SEARCH_HIGHLIGHT_START,
+                        stop_sel=SEARCH_HIGHLIGHT_END,
+                        max_words=12,
+                        min_words=3,
+                    ),
+                    headline_description=SearchHeadline(
+                        'description',
+                        query,
+                        config=SEARCH_CONFIG,
+                        start_sel=SEARCH_HIGHLIGHT_START,
+                        stop_sel=SEARCH_HIGHLIGHT_END,
+                        max_words=24,
+                        min_words=6,
+                        max_fragments=2,
+                        fragment_delimiter=' ... ',
+                    ),
+                    headline_ocr_text=SearchHeadline(
+                        'ocr_text',
+                        query,
+                        config=SEARCH_CONFIG,
+                        start_sel=SEARCH_HIGHLIGHT_START,
+                        stop_sel=SEARCH_HIGHLIGHT_END,
+                        max_words=32,
+                        min_words=8,
+                        max_fragments=2,
+                        fragment_delimiter=' ... ',
+                    ),
+                )
                 .filter(search_vector=query)
                 .order_by('-rank', '-created_at')
             )

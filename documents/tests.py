@@ -288,6 +288,25 @@ class DocumentAccessTest(TestCase):
         self.assertNotContains(response, 'Audit Notes')
         self.assertNotContains(response, 'Vendor Contract')
 
+    def test_admin_can_filter_document_list_by_extracted_date_range(self):
+        self.client.login(username='admin', password='secret123')
+        self.payroll_doc.extracted_date = date(2026, 4, 1)
+        self.audit_doc.extracted_date = date(2026, 5, 15)
+        self.legal_doc.extracted_date = date(2026, 6, 1)
+        Document.objects.bulk_update(
+            [self.payroll_doc, self.audit_doc, self.legal_doc],
+            ['extracted_date'],
+        )
+
+        response = self.client.get(
+            reverse('documents:document_list'),
+            {'date_from': '2026-05-01', 'date_to': '2026-05-31'},
+        )
+
+        self.assertContains(response, 'Audit Notes')
+        self.assertNotContains(response, 'Payroll Register')
+        self.assertNotContains(response, 'Vendor Contract')
+
     def test_document_api_list_returns_paginated_json(self):
         self.client.login(username='admin', password='secret123')
         self.payroll_doc.ocr_status = OCRStatus.COMPLETED
@@ -327,6 +346,36 @@ class DocumentAccessTest(TestCase):
 
         self.assertContains(response, 'Payroll Register')
         self.assertNotContains(response, 'Vendor Contract')
+
+    def test_postgres_search_orders_by_rank_and_highlights_matches(self):
+        if connection.vendor != 'postgresql':
+            return
+
+        self.client.login(username='admin', password='secret123')
+        title_match = self._create_document(
+            title='Zephyrrank Report',
+            uploaded_by=self.admin,
+            department=self.finance,
+            unit=self.payroll,
+            document_type='report',
+        )
+        ocr_match = self._create_document(
+            title='Body Only Match',
+            uploaded_by=self.admin,
+            department=self.finance,
+            unit=self.payroll,
+            document_type='report',
+        )
+        ocr_match.ocr_text = 'This archived OCR page mentions zephyrrank once.'
+        ocr_match.ocr_status = OCRStatus.COMPLETED
+        ocr_match.save(update_fields=['ocr_text', 'ocr_status', 'updated_at'])
+
+        response = self.client.get(reverse('documents:document_list'), {'q': 'zephyrrank'})
+        documents = list(response.context['documents'])
+
+        self.assertEqual(documents[0].pk, title_match.pk)
+        self.assertGreater(documents[0].rank, documents[1].rank)
+        self.assertContains(response, '<mark class="search-hit">Zephyrrank</mark>')
 
     def test_archive_browser_filters_by_department_year_and_type(self):
         self.client.login(username='admin', password='secret123')

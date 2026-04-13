@@ -120,7 +120,18 @@ def normalize_tag_names(raw_tags):
     return [value.strip().lower() for value in values if value and value.strip()]
 
 
-def apply_document_filters(queryset, *, query=None, department=None, unit=None, ocr_status=None, document_type=None, tags=None):
+def apply_document_filters(
+    queryset,
+    *,
+    query=None,
+    department=None,
+    unit=None,
+    ocr_status=None,
+    document_type=None,
+    date_from=None,
+    date_to=None,
+    tags=None,
+):
     if query:
         queryset = queryset.search(query)
     if department:
@@ -131,6 +142,10 @@ def apply_document_filters(queryset, *, query=None, department=None, unit=None, 
         queryset = queryset.filter(ocr_status=ocr_status)
     if document_type:
         queryset = queryset.filter(document_type=document_type)
+    if date_from:
+        queryset = queryset.filter(extracted_date__gte=date_from)
+    if date_to:
+        queryset = queryset.filter(extracted_date__lte=date_to)
     normalized_tags = normalize_tag_names(tags)
     if normalized_tags:
         for tag_name in normalized_tags:

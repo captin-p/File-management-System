@@ -58,6 +58,7 @@ File-management-System/
 - Paginated document list for responsive browsing
 - Archive browser by department, year, and document type
 - Search by title, description, and OCR text
+- Relevance-ranked PostgreSQL full-text search with highlighted matches
 - Role-based access by department scope
 - Upload-first OCR flow that scans files and pre-fills metadata for review
 - OCR metadata extraction for dates, document type, and keyword tags
@@ -278,6 +279,8 @@ Tracked actions include:
 ## Search Index Maintenance
 
 PostgreSQL installs a `tsvector` search column, trigger, and GIN index through migrations. The trigger keeps the index text current when document titles, descriptions, or OCR text change.
+
+Keyword searches use the materialized `search_vector` for title, description, and OCR text. PostgreSQL results are ranked by relevance and display highlighted matches. Filters can narrow results by department, unit, document type, OCR status, tags, and extracted document date range.
 
 Rebuild the materialized search vectors after bulk imports or manual database updates:
 

@@ -167,6 +167,16 @@ class DocumentSearchForm(BootstrapFormMixin, forms.Form):
         required=False,
         label='Document type',
     )
+    date_from = forms.DateField(
+        required=False,
+        label='Date from',
+        widget=forms.DateInput(attrs={'type': 'date'}),
+    )
+    date_to = forms.DateField(
+        required=False,
+        label='Date to',
+        widget=forms.DateInput(attrs={'type': 'date'}),
+    )
     tags = forms.CharField(
         required=False,
         label='Tags',
@@ -213,5 +223,10 @@ class DocumentSearchForm(BootstrapFormMixin, forms.Form):
 
         if unit and department and unit.department_id != department.id:
             self.add_error('unit', 'Selected unit must belong to the selected department.')
+
+        date_from = cleaned_data.get('date_from')
+        date_to = cleaned_data.get('date_to')
+        if date_from and date_to and date_from > date_to:
+            self.add_error('date_to', 'Date to must be on or after date from.')
 
         return cleaned_data
