@@ -28,8 +28,11 @@
     <div class="col-md-3">
         <div class="card h-100 shadow-sm">
             <div class="card-body">
-                <p class="text-muted mb-2">OCR backlog</p>
-                <div class="display-6">{{ ocr_backlog_count }}</div>
+                <p class="text-muted mb-2">Processing</p>
+                <div class="display-6">{{ processing_count }}</div>
+                {% if failed_count %}
+                    <div class="small text-danger">{{ failed_count }} failed</div>
+                {% endif %}
             </div>
         </div>
     </div>
@@ -44,6 +47,30 @@
     </div>
 </div>
 
+{% if can_manage_organization %}
+<div class="card shadow-sm mb-4">
+    <div class="card-body">
+        <div class="d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-3">
+            <div>
+                <h2 class="h4 mb-1">Organization settings</h2>
+                <p class="text-muted mb-0">Prepare department and unit options for users, uploads, and document filters.</p>
+            </div>
+            <div class="d-flex flex-wrap gap-2">
+                <a href="{{ organization_settings_url }}" class="btn btn-primary">Open organization settings</a>
+            </div>
+        </div>
+        <div class="small text-muted">
+            Target company: <span class="fw-semibold">{{ organization_company_name }}</span>.
+            {% if organization_setup_needed %}
+                Missing {{ organization_missing_departments }} default department{{ organization_missing_departments|pluralize }} and {{ organization_missing_units }} unit{{ organization_missing_units|pluralize }}.
+            {% else %}
+                All default departments and units are already available for this company.
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endif %}
+
 <div class="row g-4">
     <div class="col-lg-8">
         <h2 class="h4 mb-3">Recent documents</h2>
@@ -53,6 +80,7 @@
                     <thead>
                         <tr>
                             <th>Title</th>
+                            <th>Status</th>
                             <th>Uploaded by</th>
                             <th>Created</th>
                         </tr>
@@ -61,11 +89,12 @@
                     {% for document in recent_documents %}
                         <tr>
                             <td><a href="{% url 'documents:document_detail' document.pk %}">{{ document.title }}</a></td>
+                            <td>{{ document.get_processing_status_display }}</td>
                             <td>{{ document.uploaded_by }}</td>
                             <td>{{ document.created_at|date:'Y-m-d H:i' }}</td>
                         </tr>
                     {% empty %}
-                        <tr><td colspan="3" class="text-center py-4">No documents uploaded yet.</td></tr>
+                        <tr><td colspan="4" class="text-center py-4">No documents uploaded yet.</td></tr>
                     {% endfor %}
                     </tbody>
                 </table>

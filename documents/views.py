@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from django.contrib import messages
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.core.exceptions import PermissionDenied, ValidationError
@@ -8,10 +10,12 @@ from django.urls import reverse, reverse_lazy
 from django.views import View
 from django.views.generic import CreateView, DeleteView, DetailView, ListView, TemplateView, UpdateView
 
+from accounts.organization import DEFAULT_COMPANY_NAME, missing_organization_rows
+
 from .forms import DocumentMetadataForm, DocumentSearchForm, DocumentUploadForm
-from .models import AuditAction, DOC_TYPE_CHOICES, Document, OCRStatus
-from .services import apply_ocr_metadata_suggestions, log_document_audit, process_document_ocr
-from .storage import relocate_document_file, validate_document_file_integrity
+from .models import AuditAction, DOC_TYPE_CHOICES, Document, DocumentProcessingStatus, OCRStatus
+from .services import log_document_audit, queue_document_processing
+from .storage import relocate_document_file
 from .utils import (
     apply_document_filters,
     deletable_documents_for_user,
@@ -34,6 +38,17 @@ class UserScopedFormMixin:
 class AccessibleDocumentMixin(LoginRequiredMixin):
     def get_queryset(self):
         return filter_documents_for_user(self.request.user, Document.objects.for_list())
+
+
+def _document_preview_kind(document):
+    if not document.file:
+        return ''
+    extension = Path(document.original_filename or document.file.name).suffix.lower()
+    if extension == '.pdf':
+        return 'pdf'
+    if extension in {'.png', '.jpg', '.jpeg'}:
+        return 'image'
+    return ''
 
 
 class DocumentFilterMixin:
@@ -95,11 +110,17 @@ class DashboardView(LoginRequiredMixin, TemplateView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         queryset = filter_documents_for_user(self.request.user, Document.objects.for_list())
+        can_manage_organization = self.request.user.is_superuser or self.request.user.is_admin()
+        organization_company_name = (
+            self.request.user.company.name
+            if self.request.user.company_id
+            else DEFAULT_COMPANY_NAME
+        )
+        missing_departments, missing_units = missing_organization_rows(organization_company_name)
         context['document_count'] = queryset.count()
         context['my_document_count'] = queryset.filter(uploaded_by=self.request.user).count()
-        context['ocr_backlog_count'] = queryset.filter(
-            ocr_status__in=[OCRStatus.PENDING, OCRStatus.PROCESSING]
-        ).count()
+        context['processing_count'] = queryset.filter(processing_status=DocumentProcessingStatus.PROCESSING).count()
+        context['failed_count'] = queryset.filter(processing_status=DocumentProcessingStatus.FAILED).count()
         context['recent_documents'] = queryset[:5]
         context['top_uploaders'] = (
             filter_documents_for_user(self.request.user, Document.objects.all())
@@ -109,6 +130,12 @@ class DashboardView(LoginRequiredMixin, TemplateView):
         )
         context['scope_department'] = self.request.user.department
         context['scope_unit'] = self.request.user.unit
+        context['can_manage_organization'] = can_manage_organization
+        context['organization_company_name'] = organization_company_name
+        context['organization_missing_departments'] = len(missing_departments)
+        context['organization_missing_units'] = len(missing_units)
+        context['organization_setup_needed'] = bool(missing_departments or missing_units)
+        context['organization_settings_url'] = reverse('accounts:organization_settings')
         return context
 
 
@@ -142,44 +169,40 @@ class DocumentUploadView(LoginRequiredMixin, UserScopedFormMixin, CreateView):
 
     def form_valid(self, form):
         form.instance.uploaded_by = self.request.user
+        form.instance.processing_status = DocumentProcessingStatus.PROCESSING
+        form.instance.ocr_status = OCRStatus.PENDING
+        form.instance.ocr_error = ''
         self.object = form.save()
-        try:
-            validate_document_file_integrity(self.object)
-        except ValidationError as exc:
-            return self._discard_invalid_upload(form, exc)
-
-        ocr_status = process_document_ocr(self.object)
-        suggestions = apply_ocr_metadata_suggestions(self.object)
-        try:
-            relocate_document_file(self.object)
-            validate_document_file_integrity(self.object)
-        except ValidationError as exc:
-            return self._discard_invalid_upload(form, exc)
+        queue_result = queue_document_processing(self.object, user=self.request.user, request=self.request)
+        self.object.refresh_from_db()
 
         messages.success(self.request, 'File uploaded successfully.')
-        if ocr_status == OCRStatus.COMPLETED:
-            messages.info(self.request, 'OCR scanned the file and filled metadata suggestions for review.')
-        elif self.object.ocr_error:
-            messages.warning(self.request, f'OCR status: {self.object.get_ocr_status_display()}. {self.object.ocr_error}')
-        if suggestions.get('tags'):
-            messages.info(self.request, f"Suggested tags: {', '.join(suggestions['tags'])}.")
+        if queue_result.get('fallback'):
+            if self.object.processing_status == DocumentProcessingStatus.READY:
+                messages.info(self.request, 'Redis was unavailable, so the document was processed locally and is ready for review.')
+            else:
+                messages.warning(self.request, f'Processing finished with status: {self.object.get_processing_status_display()}.')
+        else:
+            messages.info(self.request, 'The document is being processed in the background.')
         log_document_audit(
             AuditAction.UPLOAD,
             document=self.object,
             user=self.request.user,
             request=self.request,
-            message='Document uploaded and scanned.',
+            message='Document uploaded for background processing.',
             metadata={
-                'ocr_status': ocr_status,
-                'suggested_tags': suggestions.get('tags', []),
+                'processing_status': self.object.processing_status,
+                'ocr_status': self.object.ocr_status,
+                'queued': queue_result.get('queued'),
+                'fallback': queue_result.get('fallback'),
+                'task_id': queue_result.get('task_id'),
                 'document_type': self.object.document_type,
-                'extracted_date': suggestions.get('extracted_date', ''),
                 'file_hash': self.object.file_hash,
                 'file_size': self.object.file_size,
                 'original_filename': self.object.original_filename,
             },
         )
-        return redirect(f"{reverse('documents:edit_document', args=[self.object.pk])}?prefill=1")
+        return redirect(reverse('documents:document_detail', args=[self.object.pk]))
 
 
 class DocumentListView(DocumentFilterMixin, AccessibleDocumentMixin, ListView):
@@ -226,6 +249,7 @@ class DocumentDetailView(AccessibleDocumentMixin, DetailView):
         context['can_edit'] = user_can_edit_document(self.request.user, self.object)
         context['can_delete'] = user_can_delete_document(self.request.user, self.object)
         context['audit_logs'] = self.object.audit_logs.select_related('actor')[:10]
+        context['file_preview_kind'] = _document_preview_kind(self.object)
         return context
 
 
@@ -306,10 +330,16 @@ def _serialize_document(document, request, *, include_body=False):
         'title': document.title,
         'document_type': document.document_type,
         'document_type_label': document.get_document_type_display(),
+        'headings': document.headings,
         'extracted_date': document.extracted_date.isoformat() if document.extracted_date else None,
         'department': document.department.name if document.department else None,
         'unit': document.unit.name if document.unit else None,
         'ocr_status': document.ocr_status,
+        'processing_status': document.processing_status,
+        'processing_status_label': document.get_processing_status_display(),
+        'metadata_source': document.metadata_source,
+        'metadata_source_label': document.get_metadata_source_display(),
+        'metadata_model': document.metadata_model,
         'uploaded_by': document.uploaded_by.username,
         'created_at': document.created_at.isoformat(),
         'updated_at': document.updated_at.isoformat(),

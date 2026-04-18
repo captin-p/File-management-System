@@ -62,13 +62,14 @@
             <div class="table-responsive">
                 <table class="table table-hover align-middle mb-0">
                     <thead>
-                        <tr><th>Title</th><th>Tags</th><th>OCR</th><th>Created</th><th>Actions</th></tr>
+                        <tr><th>Title</th><th>Tags</th><th>Status</th><th>OCR</th><th>Created</th><th>Actions</th></tr>
                     </thead>
                     <tbody>
                         {% for document in folder_docs %}
                             <tr>
                                 <td><a href="{% url 'documents:document_detail' document.pk %}">{{ document.title }}</a></td>
                                 <td>{{ document.tags.all|join:', '|default:'-' }}</td>
+                                <td>{{ document.get_processing_status_display }}</td>
                                 <td>{{ document.get_ocr_status_display }}</td>
                                 <td>{{ document.created_at|date:'Y-m-d H:i' }}</td>
                                 <td><a class="btn btn-sm btn-outline-secondary" href="{% url 'documents:edit_document' document.pk %}">Edit</a></td>

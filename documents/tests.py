@@ -3,7 +3,7 @@ import shutil
 from datetime import date
 from pathlib import Path
 from io import StringIO
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
@@ -12,12 +12,22 @@ from django.core.management import call_command
 from django.db import connection
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from kombu.exceptions import OperationalError as KombuOperationalError
 
 from accounts.models import Company, Department, Unit
+from accounts.organization import DEFAULT_ORGANIZATION_STRUCTURE
 
-from .models import AuditAction, AuditLog, Document, OCRJob, OCRJobStatus, OCRStatus, Tag
-from .services import extracted_dates_from_ocr, suggested_extracted_date_from_ocr
-from .storage import validate_document_file_integrity
+from .models import AuditAction, AuditLog, Document, DocumentProcessingStatus, MetadataSource, OCRJob, OCRJobStatus, OCRStatus, Tag
+from .services import (
+    apply_ocr_metadata_suggestions,
+    extracted_dates_from_ocr,
+    extract_text_from_pdf,
+    process_document_pipeline,
+    queue_document_processing,
+    suggested_description_from_ocr,
+    suggested_extracted_date_from_ocr,
+)
+from .storage import stored_file_metadata, validate_document_file_integrity
 
 User = get_user_model()
 TEST_MEDIA_ROOT = Path(__file__).resolve().parent.parent / '.test_media'
@@ -124,6 +134,11 @@ class DocumentAccessTest(TestCase):
             for tag in tags:
                 tag_obj, _ = Tag.objects.get_or_create(name=tag)
                 document.tags.add(tag_obj)
+        metadata = stored_file_metadata(document)
+        document.file_size = metadata.file_size
+        document.file_hash = metadata.file_hash
+        document.processing_status = DocumentProcessingStatus.READY
+        document.save(update_fields=['file_size', 'file_hash', 'processing_status', 'updated_at'])
         return document
 
     def _file_content(self, title):
@@ -138,6 +153,70 @@ class DocumentAccessTest(TestCase):
         response = self.client.get(reverse('documents:upload_document'))
         self.assertEqual(response.status_code, 302)
         self.assertIn(reverse('accounts:login'), response.url)
+
+    def test_organization_settings_requires_login(self):
+        response = self.client.get(reverse('accounts:organization_settings'))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(reverse('accounts:login'), response.url)
+
+    def test_admin_dashboard_shows_organization_setup_access(self):
+        self.client.login(username='admin', password='secret123')
+
+        response = self.client.get(reverse('documents:dashboard'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Organization settings')
+        self.assertContains(response, reverse('accounts:organization_settings'))
+        self.assertTrue(response.context['can_manage_organization'])
+        self.assertEqual(response.context['organization_company_name'], 'Acme Corp')
+        self.assertTrue(response.context['organization_setup_needed'])
+
+    def test_staff_cannot_access_organization_settings(self):
+        self.client.login(username='staff', password='secret123')
+
+        response = self.client.get(reverse('accounts:organization_settings'))
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_admin_can_seed_default_organization_from_settings_page(self):
+        self.client.login(username='admin', password='secret123')
+
+        response = self.client.post(
+            reverse('accounts:organization_settings'),
+            {'action': 'seed'},
+            follow=True,
+        )
+
+        expected_departments = len(DEFAULT_ORGANIZATION_STRUCTURE)
+        expected_units = sum(len(units) for units in DEFAULT_ORGANIZATION_STRUCTURE.values())
+
+        self.assertRedirects(response, reverse('accounts:organization_settings'))
+        self.assertEqual(Department.objects.filter(company=self.company).count(), expected_departments)
+        self.assertEqual(Unit.objects.filter(department__company=self.company).count(), expected_units)
+        self.assertContains(response, 'Organization settings ready for Acme Corp.')
+
+    def test_admin_can_add_department_and_unit_from_settings_page(self):
+        self.client.login(username='admin', password='secret123')
+
+        add_department = self.client.post(
+            reverse('accounts:organization_settings'),
+            {'action': 'add_department', 'name': 'Research'},
+        )
+        add_unit = self.client.post(
+            reverse('accounts:organization_settings'),
+            {'action': 'add_unit', 'department': Department.objects.get(company=self.company, name='Research').pk, 'name': 'Innovation Lab'},
+        )
+
+        self.assertEqual(add_department.status_code, 302)
+        self.assertEqual(add_unit.status_code, 302)
+        self.assertTrue(Department.objects.filter(company=self.company, name='Research').exists())
+        self.assertTrue(
+            Unit.objects.filter(
+                department__company=self.company,
+                department__name='Research',
+                name='Innovation Lab',
+            ).exists()
+        )
 
     def test_staff_list_only_shows_department_documents(self):
         self.client.login(username='staff', password='secret123')
@@ -236,6 +315,38 @@ class DocumentAccessTest(TestCase):
             ).exists()
         )
 
+    def test_document_detail_hides_raw_ocr_text_and_shows_extraction_summary(self):
+        self.client.login(username='staff', password='secret123')
+        self.payroll_doc.ocr_text = 'PAYROLL REGISTER\nBODY SENTENCE ONLY FOR RAW OCR DISPLAY TEST\nPrepared for April processing'
+        self.payroll_doc.description = 'PAYROLL REGISTER. Prepared for April processing'
+        self.payroll_doc.headings = ['PAYROLL REGISTER', 'Prepared for April processing']
+        self.payroll_doc.ocr_status = OCRStatus.COMPLETED
+        self.payroll_doc.metadata_source = MetadataSource.AI
+        self.payroll_doc.metadata_model = 'gpt-4.1-mini'
+        self.payroll_doc.save(update_fields=['ocr_text', 'description', 'headings', 'ocr_status', 'metadata_source', 'metadata_model', 'updated_at'])
+
+        response = self.client.get(reverse('documents:document_detail', args=[self.payroll_doc.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'OCR extraction')
+        self.assertContains(response, 'Extraction source')
+        self.assertContains(response, 'Prefilled title')
+        self.assertContains(response, 'Detected headings')
+        self.assertContains(response, 'Description summary')
+        self.assertContains(response, 'gpt-4.1-mini')
+        self.assertNotContains(response, 'BODY SENTENCE ONLY FOR RAW OCR DISPLAY TEST')
+
+    def test_document_detail_shows_inline_pdf_preview(self):
+        self.client.login(username='staff', password='secret123')
+
+        response = self.client.get(reverse('documents:document_detail', args=[self.payroll_doc.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'File preview')
+        self.assertContains(response, 'Open full file')
+        self.assertContains(response, '<iframe', html=False)
+        self.assertContains(response, f'{self.payroll_doc.file.url}#view=FitH')
+
     def test_document_files_are_stored_by_department_year_and_type(self):
         expected_prefix = f'storage/{self.finance.slug}/{self.payroll_doc.created_at.year}/report/'
 
@@ -264,6 +375,67 @@ class DocumentAccessTest(TestCase):
             [date(2026, 4, 13), date(2026, 5, 1), date(2026, 4, 20)],
         )
         self.assertEqual(suggested_extracted_date_from_ocr(ocr_text), date(2026, 4, 13))
+
+    def test_suggested_description_prefers_heading_like_lines(self):
+        ocr_text = (
+            'ACME CORPORATION\n'
+            'QUARTERLY PAYROLL REPORT\n'
+            'APRIL 2026\n'
+            'This paragraph contains body details that should stay out of the description summary.\n'
+            'Payroll was processed successfully.'
+        )
+
+        description = suggested_description_from_ocr(ocr_text, title='ACME CORPORATION')
+
+        self.assertEqual(description, 'QUARTERLY PAYROLL REPORT. APRIL 2026')
+
+    @override_settings(AI_METADATA_ENABLED=True, OPENAI_API_KEY='test-key', AI_METADATA_MODEL='gpt-4.1-mini', AI_METADATA_USE_IMAGE=False)
+    @patch('documents.services.extract_document_metadata_with_ai')
+    def test_apply_ocr_metadata_suggestions_uses_ai_when_available(self, extract_document_metadata_with_ai_mock):
+        self.payroll_doc.ocr_text = (
+            'PAYROLL REGISTER\n'
+            'APRIL 2026\n'
+            'Processed salary ledger for monthly payroll.'
+        )
+        self.payroll_doc.ocr_status = OCRStatus.COMPLETED
+        self.payroll_doc.save(update_fields=['ocr_text', 'ocr_status', 'updated_at'])
+        extract_document_metadata_with_ai_mock.return_value = {
+            'title': 'Payroll Register',
+            'description': 'April 2026 salary ledger',
+            'headings': ['PAYROLL REGISTER', 'APRIL 2026', 'Monthly salary ledger'],
+            'document_type': 'report',
+            'tags': ['payroll', 'salary', 'april'],
+            'extracted_date': '2026-04-13',
+            'metadata_source': 'ai',
+            'metadata_model': 'gpt-4.1-mini',
+        }
+
+        result = apply_ocr_metadata_suggestions(self.payroll_doc)
+
+        self.payroll_doc.refresh_from_db()
+        self.assertEqual(self.payroll_doc.metadata_source, MetadataSource.AI)
+        self.assertEqual(self.payroll_doc.metadata_model, 'gpt-4.1-mini')
+        self.assertEqual(self.payroll_doc.title, 'Payroll Register')
+        self.assertEqual(self.payroll_doc.description, 'April 2026 salary ledger')
+        self.assertEqual(self.payroll_doc.headings, ['APRIL 2026', 'Monthly salary ledger'])
+        self.assertEqual(self.payroll_doc.extracted_date, date(2026, 4, 13))
+        self.assertEqual(sorted(self.payroll_doc.tags.values_list('name', flat=True)), ['april', 'payroll', 'salary'])
+        self.assertEqual(result['metadata_source'], MetadataSource.AI)
+
+    def test_document_api_detail_includes_ai_metadata_fields(self):
+        self.client.login(username='admin', password='secret123')
+        self.payroll_doc.headings = ['PAYROLL REGISTER', 'APRIL 2026']
+        self.payroll_doc.metadata_source = MetadataSource.AI
+        self.payroll_doc.metadata_model = 'gpt-4.1-mini'
+        self.payroll_doc.save(update_fields=['headings', 'metadata_source', 'metadata_model', 'updated_at'])
+
+        response = self.client.get(reverse('documents:document_api_detail', args=[self.payroll_doc.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['headings'], ['PAYROLL REGISTER', 'APRIL 2026'])
+        self.assertEqual(payload['metadata_source'], MetadataSource.AI)
+        self.assertEqual(payload['metadata_model'], 'gpt-4.1-mini')
 
     def test_admin_can_filter_document_list_by_department(self):
         self.client.login(username='admin', password='secret123')
@@ -406,19 +578,15 @@ class DocumentAccessTest(TestCase):
         self.assertTrue(response.context['is_paginated'])
         self.assertEqual(len(response.context['documents']), 20)
 
-    @patch('documents.views.process_document_ocr')
-    def test_upload_scans_and_prefills_metadata_form(self, process_document_ocr_mock):
+    @patch('documents.views.queue_document_processing')
+    def test_upload_queues_background_processing(self, queue_document_processing_mock):
         self.client.login(username='admin', password='secret123')
         uploaded_content = b'%PDF-1.4 sample invoice'
-
-        def mark_ocr_complete(document):
-            document.ocr_text = 'Invoice 4242\nInvoice Date: 2026-04-13\nBill to Acme Corp\nTotal due 240.00'
-            document.ocr_status = OCRStatus.COMPLETED
-            document.ocr_error = ''
-            document.save(update_fields=['ocr_text', 'ocr_status', 'ocr_error', 'updated_at'])
-            return OCRStatus.COMPLETED
-
-        process_document_ocr_mock.side_effect = mark_ocr_complete
+        queue_document_processing_mock.return_value = {
+            'queued': True,
+            'fallback': False,
+            'task_id': 'task-123',
+        }
 
         response = self.client.post(
             reverse('documents:upload_document'),
@@ -430,17 +598,55 @@ class DocumentAccessTest(TestCase):
             follow=True,
         )
 
-        document = Document.objects.get(title='Invoice 4242')
+        document = Document.objects.get(title='invoice')
         self.assertRedirects(
             response,
-            f"{reverse('documents:edit_document', args=[document.pk])}?prefill=1",
+            reverse('documents:document_detail', args=[document.pk]),
         )
+        self.assertEqual(document.processing_status, DocumentProcessingStatus.PROCESSING)
+        self.assertEqual(document.ocr_status, OCRStatus.PENDING)
+        self.assertEqual(document.file_hash, '')
+        self.assertEqual(document.original_filename, 'invoice.pdf')
+        self.assertEqual(document.file_size, len(uploaded_content))
+        queue_document_processing_mock.assert_called_once()
+        upload_log = document.audit_logs.get(action=AuditAction.UPLOAD, actor=self.admin)
+        self.assertEqual(upload_log.metadata['queued'], True)
+        self.assertEqual(upload_log.metadata['task_id'], 'task-123')
+        self.assertContains(response, 'The document is being processed in the background.')
+
+    @patch('documents.services.process_document_ocr')
+    def test_processing_pipeline_hashes_scans_and_prefills_metadata(self, process_document_ocr_mock):
+        uploaded_content = b'%PDF-1.4 sample invoice'
+        document = Document.objects.create(
+            title='invoice',
+            description='',
+            document_type='other',
+            uploaded_by=self.admin,
+            department=self.finance,
+            unit=self.payroll,
+            processing_status=DocumentProcessingStatus.PROCESSING,
+            ocr_status=OCRStatus.PENDING,
+            file=SimpleUploadedFile('invoice.pdf', uploaded_content, content_type='application/pdf'),
+        )
+
+        def mark_ocr_complete(document):
+            document.ocr_text = 'Invoice 4242\nInvoice Date: 2026-04-13\nBill to Acme Corp\nTotal due 240.00'
+            document.ocr_status = OCRStatus.COMPLETED
+            document.ocr_error = ''
+            document.save(update_fields=['ocr_text', 'ocr_status', 'ocr_error', 'updated_at'])
+            return OCRStatus.COMPLETED
+
+        process_document_ocr_mock.side_effect = mark_ocr_complete
+
+        result = process_document_pipeline(document.pk)
+
+        document.refresh_from_db()
+        self.assertEqual(result['status'], DocumentProcessingStatus.READY)
+        self.assertEqual(document.processing_status, DocumentProcessingStatus.READY)
         self.assertEqual(document.ocr_status, OCRStatus.COMPLETED)
         self.assertEqual(document.ocr_text, 'Invoice 4242\nInvoice Date: 2026-04-13\nBill to Acme Corp\nTotal due 240.00')
         self.assertEqual(document.document_type, 'invoice')
         self.assertEqual(document.extracted_date, date(2026, 4, 13))
-        self.assertEqual(document.original_filename, 'invoice.pdf')
-        self.assertEqual(document.file_size, len(uploaded_content))
         self.assertEqual(document.file_hash, hashlib.sha256(uploaded_content).hexdigest())
         self.assertTrue(document.file.name.startswith(f'storage/{self.finance.slug}/{document.created_at.year}/invoice/'))
         self.assertEqual(Path(document.file.name).name, f'{document.pk}.pdf')
@@ -448,30 +654,63 @@ class DocumentAccessTest(TestCase):
         self.assertEqual(sorted(document.tags.values_list('name', flat=True)), ['acme', 'bill', 'corp', 'due'])
         self.assertEqual(document.ocr_jobs.count(), 0)
         process_document_ocr_mock.assert_called_once()
-        upload_log = document.audit_logs.get(action=AuditAction.UPLOAD, actor=self.admin)
-        self.assertEqual(upload_log.metadata['ocr_status'], OCRStatus.COMPLETED)
-        self.assertEqual(upload_log.metadata['extracted_date'], '2026-04-13')
-        self.assertContains(response, 'OCR filled these fields from the uploaded file.')
-        self.assertContains(response, 'OCR scanned the file and filled metadata suggestions for review.')
 
-    def test_upload_rejects_duplicate_file_hash(self):
-        self.client.login(username='admin', password='secret123')
+    @override_settings(OCR_PDF_MAX_PAGES=2, OCR_POPPLER_PATH='')
+    def test_pdf_ocr_limits_extraction_to_first_two_pages(self):
+        dependencies = {
+            'convert_from_path': Mock(return_value=['page-1-image', 'page-2-image']),
+            'pytesseract': Mock(),
+        }
+        dependencies['pytesseract'].image_to_string.side_effect = ['Page one text', 'Page two text']
 
-        response = self.client.post(
-            reverse('documents:upload_document'),
-            {
-                'department': self.finance.pk,
-                'unit': self.payroll.pk,
-                'file': SimpleUploadedFile(
-                    'payroll-copy.pdf',
-                    self._file_content('Payroll Register'),
-                    content_type='application/pdf',
-                ),
-            },
+        extracted_text = extract_text_from_pdf('sample.pdf', dependencies)
+
+        self.assertEqual(extracted_text, 'Page one text\nPage two text')
+        dependencies['convert_from_path'].assert_called_once_with(
+            'sample.pdf',
+            dpi=250,
+            first_page=1,
+            last_page=2,
+        )
+        self.assertEqual(dependencies['pytesseract'].image_to_string.call_count, 2)
+
+    def test_processing_pipeline_rejects_duplicate_file_hash(self):
+        document = Document.objects.create(
+            title='payroll-copy',
+            description='',
+            document_type='other',
+            uploaded_by=self.admin,
+            department=self.finance,
+            unit=self.payroll,
+            processing_status=DocumentProcessingStatus.PROCESSING,
+            ocr_status=OCRStatus.PENDING,
+            file=SimpleUploadedFile(
+                'payroll-copy.pdf',
+                self._file_content('Payroll Register'),
+                content_type='application/pdf',
+            ),
         )
 
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'This file was already uploaded as &quot;Payroll Register&quot;.')
+        result = process_document_pipeline(document.pk)
+
+        document.refresh_from_db()
+        self.assertEqual(result['status'], DocumentProcessingStatus.FAILED)
+        self.assertEqual(document.processing_status, DocumentProcessingStatus.FAILED)
+        self.assertEqual(document.ocr_status, OCRStatus.FAILED)
+        self.assertEqual(document.file.name, '')
+        self.assertIn('Payroll Register', document.ocr_error)
+
+    @patch('documents.services.process_document_pipeline')
+    @patch('documents.tasks.process_document_task.apply_async')
+    def test_queue_document_processing_falls_back_when_redis_is_unavailable(self, apply_async_mock, pipeline_mock):
+        apply_async_mock.side_effect = KombuOperationalError('redis unavailable')
+        pipeline_mock.return_value = {'status': DocumentProcessingStatus.READY}
+
+        result = queue_document_processing(self.payroll_doc, user=self.admin)
+
+        self.assertFalse(result['queued'])
+        self.assertTrue(result['fallback'])
+        pipeline_mock.assert_called_once_with(str(self.payroll_doc.pk), fallback=True)
 
     def test_upload_rejects_files_over_ten_megabytes(self):
         self.client.login(username='admin', password='secret123')

@@ -6,11 +6,28 @@ from datetime import date
 from pathlib import Path
 
 from django.conf import settings
-from django.db import connection, transaction
+from django.core.exceptions import ValidationError
+from django.db import IntegrityError, connection, transaction
 from django.db.models import F
 from django.utils import timezone
+from celery.exceptions import CeleryError
+from kombu.exceptions import OperationalError as KombuOperationalError
+from redis.exceptions import RedisError
 
-from .models import AuditAction, AuditLog, DOC_TYPE_CHOICES, Document, OCRJob, OCRJobStatus, OCRStatus, Tag
+from .models import (
+    AuditAction,
+    AuditLog,
+    DOC_TYPE_CHOICES,
+    Document,
+    MetadataSource,
+    DocumentProcessingStatus,
+    OCRJob,
+    OCRJobStatus,
+    OCRStatus,
+    Tag,
+)
+from .ai_extraction import extract_document_metadata_with_ai
+from .storage import relocate_document_file, stored_file_metadata, validate_document_file_integrity
 
 logger = logging.getLogger(__name__)
 ACTIVE_OCR_JOB_STATUSES = [OCRJobStatus.QUEUED, OCRJobStatus.PROCESSING]
@@ -44,6 +61,18 @@ TAG_STOP_WORDS = {
     'with',
     'your',
 }
+OCR_SUMMARY_NOISE_PATTERN = re.compile(
+    r'^(page\s+\d+(?:\s+of\s+\d+)?|confidential|draft|scan(?:ned)?\s+copy)$',
+    re.IGNORECASE,
+)
+OCR_SUMMARY_METADATA_PATTERN = re.compile(
+    r'\b(invoice date|date|total|subtotal|tax|balance|amount due|reference|ref\.?|page)\b',
+    re.IGNORECASE,
+)
+OCR_SUMMARY_VALUE_PATTERN = re.compile(
+    r'\b(total|subtotal|tax|balance|amount due)\b',
+    re.IGNORECASE,
+)
 DOCUMENT_TYPE_KEYWORDS = {
     'invoice': {'invoice', 'receipt', 'subtotal', 'tax', 'amount due', 'bill to', 'payment'},
     'contract': {'agreement', 'contract', 'party', 'parties', 'terms', 'signature'},
@@ -94,6 +123,13 @@ DATE_PATTERNS = [
 ]
 
 
+class DuplicateDocumentUpload(Exception):
+    def __init__(self, duplicate, file_hash):
+        self.duplicate = duplicate
+        self.file_hash = file_hash
+        super().__init__(f'This file was already uploaded as "{duplicate.title}".')
+
+
 def _request_ip_address(request):
     if not request:
         return None
@@ -118,6 +154,34 @@ def log_document_audit(action, *, document=None, user=None, request=None, messag
         ip_address=_request_ip_address(request),
         user_agent=user_agent,
     )
+
+
+def queue_document_processing(document, *, user=None, request=None):
+    from .tasks import process_document_task
+
+    try:
+        async_result = process_document_task.apply_async(args=[str(document.pk)], retry=False)
+        log_document_audit(
+            AuditAction.OCR_QUEUE,
+            document=document,
+            user=user,
+            request=request,
+            message='Document processing queued.',
+            metadata={'task_id': async_result.id, 'backend': 'celery'},
+        )
+        return {'queued': True, 'fallback': False, 'task_id': async_result.id}
+    except (CeleryError, KombuOperationalError, RedisError, OSError) as exc:
+        logger.warning('Celery broker unavailable; processing document inline: %s', exc)
+        log_document_audit(
+            AuditAction.OCR_QUEUE,
+            document=document,
+            user=user,
+            request=request,
+            message='Redis unavailable; processing document inline.',
+            metadata={'fallback': True, 'error': str(exc)[:255]},
+        )
+        result = process_document_pipeline(str(document.pk), fallback=True)
+        return {'queued': False, 'fallback': True, 'result': result}
 
 
 def _configure_tesseract(pytesseract):
@@ -185,7 +249,11 @@ def _validate_poppler_for_pdf():
 def extract_text_from_pdf(file_path, dependencies):
     text = []
     try:
-        convert_kwargs = {'dpi': 250}
+        convert_kwargs = {
+            'dpi': 250,
+            'first_page': 1,
+            'last_page': max(1, int(getattr(settings, 'OCR_PDF_MAX_PAGES', 2))),
+        }
         poppler_path = getattr(settings, 'OCR_POPPLER_PATH', '')
         if poppler_path:
             convert_kwargs['poppler_path'] = poppler_path
@@ -244,17 +312,331 @@ def process_document_ocr(document):
     return document.ocr_status
 
 
+def _mark_document_processing(document):
+    now = timezone.now()
+    Document.objects.filter(pk=document.pk).update(
+        processing_status=DocumentProcessingStatus.PROCESSING,
+        ocr_status=OCRStatus.PROCESSING,
+        ocr_error='',
+        updated_at=now,
+    )
+    document.processing_status = DocumentProcessingStatus.PROCESSING
+    document.ocr_status = OCRStatus.PROCESSING
+    document.ocr_error = ''
+    document.updated_at = now
+
+
+def _mark_document_failed(document, message, *, clear_file=False, ocr_status=OCRStatus.FAILED):
+    update_fields = {
+        'processing_status': DocumentProcessingStatus.FAILED,
+        'ocr_status': ocr_status,
+        'ocr_error': message[:255],
+        'updated_at': timezone.now(),
+    }
+    if clear_file:
+        update_fields['file'] = ''
+    Document.objects.filter(pk=document.pk).update(**update_fields)
+    document.processing_status = DocumentProcessingStatus.FAILED
+    document.ocr_status = ocr_status
+    document.ocr_error = message[:255]
+    if clear_file:
+        document.file.name = ''
+
+
+def _mark_document_ready(document):
+    Document.objects.filter(pk=document.pk).update(
+        processing_status=DocumentProcessingStatus.READY,
+        updated_at=timezone.now(),
+    )
+    document.processing_status = DocumentProcessingStatus.READY
+
+
+def _apply_background_file_hash(document):
+    metadata = stored_file_metadata(document)
+    duplicate = (
+        Document.objects
+        .filter(file_hash=metadata.file_hash)
+        .exclude(pk=document.pk)
+        .first()
+    )
+    if duplicate:
+        raise DuplicateDocumentUpload(duplicate, metadata.file_hash)
+
+    document.original_filename = document.original_filename or metadata.original_filename
+    document.file_size = metadata.file_size
+    document.file_hash = metadata.file_hash
+
+    try:
+        document.save(update_fields=['original_filename', 'file_size', 'file_hash', 'updated_at'])
+    except IntegrityError as exc:
+        duplicate = (
+            Document.objects
+            .filter(file_hash=metadata.file_hash)
+            .exclude(pk=document.pk)
+            .first()
+        )
+        if duplicate:
+            raise DuplicateDocumentUpload(duplicate, metadata.file_hash) from exc
+        raise
+
+    return metadata
+
+
+def process_document_pipeline(document_id, *, fallback=False):
+    document = Document.objects.get(pk=document_id)
+    _mark_document_processing(document)
+
+    try:
+        metadata = _apply_background_file_hash(document)
+        validate_document_file_integrity(document)
+        ocr_status = process_document_ocr(document)
+        suggestions = {}
+        if ocr_status == OCRStatus.COMPLETED:
+            suggestions = apply_ocr_metadata_suggestions(document)
+        document.refresh_from_db()
+        relocate_document_file(document)
+        validate_document_file_integrity(document)
+
+        if ocr_status == OCRStatus.COMPLETED:
+            _mark_document_ready(document)
+            message = 'Document processing completed.'
+            final_status = DocumentProcessingStatus.READY
+        else:
+            final_status = DocumentProcessingStatus.FAILED
+            message = document.ocr_error or 'Document processing failed.'
+            _mark_document_failed(document, message, ocr_status=ocr_status)
+
+        log_document_audit(
+            AuditAction.OCR_PROCESS,
+            document=document,
+            message=message,
+            metadata={
+                'backend': 'inline' if fallback else 'celery',
+                'processing_status': final_status,
+                'ocr_status': ocr_status,
+                'file_hash': metadata.file_hash,
+                'file_size': metadata.file_size,
+                'document_type': document.document_type,
+                'extracted_date': document.extracted_date.isoformat() if document.extracted_date else '',
+                'metadata_source': document.metadata_source,
+                'metadata_model': document.metadata_model,
+                'headings': document.headings,
+                'suggested_tags': suggestions.get('tags', []),
+            },
+        )
+        return {'status': final_status, 'ocr_status': ocr_status}
+    except DuplicateDocumentUpload as exc:
+        logger.warning('Duplicate upload rejected for document %s: %s', document.pk, exc)
+        if document.file:
+            document.file.delete(save=False)
+        _mark_document_failed(document, str(exc), clear_file=True)
+        log_document_audit(
+            AuditAction.OCR_PROCESS,
+            document=document,
+            message='Duplicate upload rejected.',
+            metadata={
+                'backend': 'inline' if fallback else 'celery',
+                'processing_status': DocumentProcessingStatus.FAILED,
+                'duplicate_document_id': str(exc.duplicate.pk),
+                'file_hash': exc.file_hash,
+            },
+        )
+        return {'status': DocumentProcessingStatus.FAILED, 'error': str(exc)}
+    except (ValidationError, OSError, IntegrityError) as exc:
+        message = _validation_message(exc)
+        logger.warning('Document processing failed for %s: %s', document.pk, message)
+        _mark_document_failed(document, message)
+        log_document_audit(
+            AuditAction.OCR_PROCESS,
+            document=document,
+            message='Document processing failed.',
+            metadata={
+                'backend': 'inline' if fallback else 'celery',
+                'processing_status': DocumentProcessingStatus.FAILED,
+                'error': message,
+            },
+        )
+        return {'status': DocumentProcessingStatus.FAILED, 'error': message}
+    except Exception as exc:
+        logger.exception('Unexpected document processing failure for %s', document.pk)
+        message = str(exc) or 'Unexpected document processing error.'
+        _mark_document_failed(document, message)
+        log_document_audit(
+            AuditAction.OCR_PROCESS,
+            document=document,
+            message='Document processing failed unexpectedly.',
+            metadata={
+                'backend': 'inline' if fallback else 'celery',
+                'processing_status': DocumentProcessingStatus.FAILED,
+                'error': message[:255],
+            },
+        )
+        return {'status': DocumentProcessingStatus.FAILED, 'error': message[:255]}
+
+
+def _validation_message(exc):
+    if hasattr(exc, 'messages'):
+        return ' '.join(exc.messages)
+    return str(exc) or 'Document processing failed.'
+
+
 def suggested_title_from_ocr(ocr_text, fallback):
-    for line in ocr_text.splitlines():
-        cleaned = ' '.join(line.strip().split())
-        if len(cleaned) >= 4:
-            return cleaned[:255]
+    normalized_lines = _normalized_ocr_lines(ocr_text)
+    for index, line in enumerate(normalized_lines):
+        if _ocr_summary_line_score(line, index) >= 8:
+            return line[:255]
+    for _, _, line in _ranked_ocr_summary_lines(ocr_text):
+        return line[:255]
+    for line in normalized_lines:
+        if len(line) >= 4:
+            return line[:255]
     return fallback[:255] or 'Scanned document'
 
 
-def suggested_description_from_ocr(ocr_text):
-    cleaned = ' '.join(ocr_text.split())
-    return cleaned[:600]
+def suggested_description_from_ocr(ocr_text, *, title=''):
+    title_key = title.strip().lower()
+    candidates = []
+    for _, _, line in _ranked_ocr_summary_lines(ocr_text):
+        if title_key and line.lower() == title_key:
+            continue
+        candidates.append(line)
+        if len(candidates) == 2:
+            break
+
+    if candidates:
+        summary = '. '.join(_trim_summary_line(line) for line in candidates if line)
+        if summary:
+            return summary[:600]
+
+    fallback_lines = [
+        line for line in _normalized_ocr_lines(ocr_text)
+        if line and line.lower() != title_key
+    ]
+    if not fallback_lines:
+        return ''
+
+    fallback_text = ' '.join(fallback_lines)
+    fallback_text = re.sub(r'\s+', ' ', fallback_text).strip()
+    return fallback_text[:280]
+
+
+def suggested_headings_from_ocr(ocr_text, *, title='', limit=5):
+    title_key = title.strip().lower()
+    headings = []
+    for _, _, line in _ranked_ocr_summary_lines(ocr_text):
+        if title_key and line.lower() == title_key:
+            continue
+        headings.append(line[:255])
+        if len(headings) == limit:
+            return headings
+
+    for line in _normalized_ocr_lines(ocr_text):
+        if title_key and line.lower() == title_key:
+            continue
+        headings.append(line[:255])
+        if len(headings) == limit:
+            break
+
+    return headings
+
+
+def _normalized_ocr_lines(ocr_text):
+    seen = set()
+    lines = []
+    for raw_line in ocr_text.splitlines():
+        cleaned = _trim_summary_line(raw_line)
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        lines.append(cleaned)
+    return lines
+
+
+def _trim_summary_line(line):
+    return re.sub(r'\s+', ' ', line).strip(" \t-_:|")
+
+
+def _ranked_ocr_summary_lines(ocr_text):
+    ranked = []
+    for index, line in enumerate(_normalized_ocr_lines(ocr_text)):
+        score = _ocr_summary_line_score(line, index)
+        if score >= 4:
+            ranked.append((score, index, line))
+    return sorted(ranked, key=lambda item: (-item[0], item[1], len(item[2])))
+
+
+def _ocr_summary_line_score(line, index):
+    lowered = line.lower()
+    if OCR_SUMMARY_NOISE_PATTERN.match(lowered):
+        return -100
+
+    words = re.findall(r"[A-Za-z0-9][A-Za-z0-9&'/.-]*", line)
+    if len(words) < 2:
+        return -100
+
+    alpha_chars = sum(character.isalpha() for character in line)
+    digit_chars = sum(character.isdigit() for character in line)
+    if alpha_chars < 4 or len(line) > 140:
+        return -100
+
+    score = max(0, 10 - index)
+
+    if 2 <= len(words) <= 10:
+        score += 6
+    elif len(words) <= 14:
+        score += 3
+    else:
+        score -= 3
+
+    if 6 <= len(line) <= 80:
+        score += 4
+    elif len(line) <= 110:
+        score += 1
+    else:
+        score -= 4
+
+    if len(words) <= 4 and not re.search(r'[.!?]$', line):
+        score += 2
+
+    if line == line.upper() and alpha_chars >= 6:
+        score += 3
+
+    capitalized_words = sum(1 for word in words if word[:1].isupper())
+    if capitalized_words / max(len(words), 1) >= 0.6:
+        score += 2
+
+    if any(pattern.search(line) for pattern in DATE_PATTERNS):
+        score -= 10
+
+    if digit_chars and digit_chars > alpha_chars / 2:
+        score -= 4
+
+    if ':' in line:
+        before_colon, _, after_colon = line.partition(':')
+        after_alpha = sum(character.isalpha() for character in after_colon)
+        after_digits = sum(character.isdigit() for character in after_colon)
+        if after_alpha >= 4 and after_alpha >= after_digits:
+            score += 1
+        else:
+            score -= 3
+
+    if OCR_SUMMARY_METADATA_PATTERN.search(lowered):
+        score -= 4
+        if digit_chars:
+            score -= 6
+    if OCR_SUMMARY_VALUE_PATTERN.search(lowered):
+        score -= 6
+
+    if re.search(r'[.!?]$', line):
+        score -= 2
+
+    if re.search(r'\b(report|invoice|contract|policy|memo|summary|minutes|register|statement)\b', lowered):
+        score += 2
+
+    return score
 
 
 def suggested_document_type_from_ocr(ocr_text, fallback='other'):
@@ -317,22 +699,79 @@ def apply_ocr_metadata_suggestions(document):
     if not ocr_text.strip():
         if not document.title:
             document.title = suggested_title_from_ocr('', fallback_title)
-            document.save(update_fields=['title', 'updated_at'])
+            document.headings = []
+            document.metadata_source = MetadataSource.HEURISTIC
+            document.metadata_model = ''
+            document.save(update_fields=['title', 'headings', 'metadata_source', 'metadata_model', 'updated_at'])
         return {
             'title': document.title,
             'description': document.description,
+            'headings': document.headings,
             'document_type': document.document_type,
             'extracted_date': document.extracted_date.isoformat() if document.extracted_date else '',
             'tags': [],
+            'metadata_source': document.metadata_source,
+            'metadata_model': document.metadata_model,
         }
 
-    document.title = suggested_title_from_ocr(ocr_text, fallback_title)
-    document.description = suggested_description_from_ocr(ocr_text)
-    document.document_type = suggested_document_type_from_ocr(ocr_text, document.document_type)
-    document.extracted_date = suggested_extracted_date_from_ocr(ocr_text)
-    document.save(update_fields=['title', 'description', 'document_type', 'extracted_date', 'updated_at'])
+    heuristic_title = suggested_title_from_ocr(ocr_text, fallback_title)
+    heuristic_description = suggested_description_from_ocr(ocr_text, title=heuristic_title)
+    heuristic_headings = suggested_headings_from_ocr(ocr_text, title=heuristic_title)
+    heuristic_document_type = suggested_document_type_from_ocr(ocr_text, document.document_type)
+    heuristic_extracted_date = suggested_extracted_date_from_ocr(ocr_text)
+    heuristic_tags = suggested_tags_from_ocr(ocr_text)
 
-    tag_names = suggested_tags_from_ocr(ocr_text)
+    ai_metadata = None
+    try:
+        ai_metadata = extract_document_metadata_with_ai(document)
+    except Exception as exc:
+        logger.warning('AI metadata extraction failed for %s: %s', document.pk, exc)
+
+    title = _bounded_value(
+        ai_metadata.get('title') if ai_metadata else '',
+        fallback=heuristic_title,
+        limit=255,
+    )
+    description = _bounded_value(
+        ai_metadata.get('description') if ai_metadata else '',
+        fallback=suggested_description_from_ocr(ocr_text, title=title),
+        limit=600,
+    )
+    headings = _resolved_headings(
+        ai_metadata.get('headings') if ai_metadata else [],
+        fallback=suggested_headings_from_ocr(ocr_text, title=title),
+        title=title,
+    )
+    document_type = _resolved_document_type(
+        ai_metadata.get('document_type') if ai_metadata else '',
+        fallback=heuristic_document_type,
+    )
+    extracted_date = _resolved_extracted_date(
+        ai_metadata.get('extracted_date') if ai_metadata else '',
+        fallback=heuristic_extracted_date,
+    )
+    tag_names = (ai_metadata.get('tags') if ai_metadata else []) or heuristic_tags
+
+    document.title = title
+    document.description = description
+    document.headings = headings
+    document.document_type = document_type
+    document.extracted_date = extracted_date
+    document.metadata_source = MetadataSource.AI if ai_metadata else MetadataSource.HEURISTIC
+    document.metadata_model = (ai_metadata or {}).get('metadata_model', '')
+    document.save(
+        update_fields=[
+            'title',
+            'description',
+            'headings',
+            'document_type',
+            'extracted_date',
+            'metadata_source',
+            'metadata_model',
+            'updated_at',
+        ]
+    )
+
     if tag_names:
         tags = [Tag.objects.get_or_create(name=name)[0] for name in tag_names]
         document.tags.set(tags)
@@ -340,10 +779,59 @@ def apply_ocr_metadata_suggestions(document):
     return {
         'title': document.title,
         'description': document.description,
+        'headings': document.headings,
         'document_type': document.document_type,
         'extracted_date': document.extracted_date.isoformat() if document.extracted_date else '',
         'tags': tag_names,
+        'metadata_source': document.metadata_source,
+        'metadata_model': document.metadata_model,
     }
+
+
+def _bounded_value(value, *, fallback='', limit=255):
+    cleaned = ' '.join((value or '').split()).strip()
+    if cleaned:
+        return cleaned[:limit]
+    return (fallback or '')[:limit]
+
+
+def _resolved_headings(values, *, fallback=None, title='', limit=5):
+    resolved = []
+    seen = set()
+    title_key = title.strip().lower()
+    sources = values or fallback or []
+
+    for source in sources:
+        cleaned = ' '.join(str(source).split()).strip()
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key == title_key or key in seen:
+            continue
+        seen.add(key)
+        resolved.append(cleaned[:255])
+        if len(resolved) == limit:
+            return resolved
+
+    return resolved
+
+
+def _resolved_document_type(value, *, fallback='other'):
+    valid_values = dict(DOC_TYPE_CHOICES)
+    if value in valid_values:
+        return value
+    return fallback if fallback in valid_values else 'other'
+
+
+def _resolved_extracted_date(value, *, fallback=None):
+    if isinstance(value, date):
+        return value
+    if value:
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            return fallback
+    return fallback
 
 
 def enqueue_document_ocr(document, *, force=False):
@@ -405,6 +893,7 @@ def claim_next_ocr_job(*, document_id=None):
         job.refresh_from_db()
 
         Document.objects.filter(pk=job.document_id).update(
+            processing_status=DocumentProcessingStatus.PROCESSING,
             ocr_status=OCRStatus.PROCESSING,
             ocr_error='',
             updated_at=now,
@@ -436,6 +925,14 @@ def process_ocr_job(job):
 
     job.finished_at = timezone.now()
     job.save(update_fields=['status', 'error', 'finished_at', 'updated_at'])
+    Document.objects.filter(pk=document.pk).update(
+        processing_status=(
+            DocumentProcessingStatus.READY
+            if job.status == OCRJobStatus.COMPLETED
+            else DocumentProcessingStatus.FAILED
+        ),
+        updated_at=timezone.now(),
+    )
     log_document_audit(
         AuditAction.OCR_PROCESS,
         document=document,

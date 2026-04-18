@@ -107,6 +107,26 @@ DEFAULT_POPPLER_PATH = Path.home() / 'AppData/Local/Programs/Poppler/Library/bin
 OCR_POPPLER_PATH = os.environ.get('OCR_POPPLER_PATH') or (
     str(DEFAULT_POPPLER_PATH) if DEFAULT_POPPLER_PATH.exists() else ''
 )
+OCR_PDF_MAX_PAGES = max(1, int(os.environ.get('OCR_PDF_MAX_PAGES', '2')))
+
+CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://localhost:6379/0')
+CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', CELERY_BROKER_URL)
+CELERY_TASK_ALWAYS_EAGER = os.environ.get('CELERY_TASK_ALWAYS_EAGER', 'False') == 'True'
+CELERY_TASK_EAGER_PROPAGATES = os.environ.get('CELERY_TASK_EAGER_PROPAGATES', 'True') == 'True'
+CELERY_TASK_IGNORE_RESULT = True
+CELERY_TASK_PUBLISH_RETRY = os.environ.get('CELERY_TASK_PUBLISH_RETRY', 'False') == 'True'
+CELERY_BROKER_CONNECTION_TIMEOUT = int(os.environ.get('CELERY_BROKER_CONNECTION_TIMEOUT', '3'))
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = TIME_ZONE
+
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
+AI_METADATA_ENABLED = os.environ.get('AI_METADATA_ENABLED', 'False') == 'True'
+AI_METADATA_MODEL = os.environ.get('AI_METADATA_MODEL', 'gpt-4.1-mini')
+AI_METADATA_USE_IMAGE = os.environ.get('AI_METADATA_USE_IMAGE', 'True') == 'True'
+AI_METADATA_MAX_OCR_CHARS = int(os.environ.get('AI_METADATA_MAX_OCR_CHARS', '12000'))
+AI_METADATA_MAX_HEADINGS = int(os.environ.get('AI_METADATA_MAX_HEADINGS', '5'))
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 

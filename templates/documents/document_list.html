@@ -4,7 +4,7 @@
 <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3 mb-4">
     <div>
         <h1 class="h2 mb-1">Documents</h1>
-        <p class="text-muted mb-0">Searchable archive with paginated results and stored OCR text.</p>
+        <p class="text-muted mb-0">Searchable archive with paginated results and OCR-backed metadata.</p>
     </div>
     <a href="{% url 'documents:upload_document' %}" class="btn btn-primary">Upload document</a>
 </div>
@@ -59,6 +59,7 @@
             <thead>
                 <tr>
                     <th>Title</th>
+                    <th>Status</th>
                     <th>Type</th>
                     <th>Date</th>
                     <th>Department</th>
@@ -84,12 +85,21 @@
                         {% if search_query and document.headline_description %}
                             <div class="small text-muted mt-1">{{ document.headline_description|search_highlight }}</div>
                         {% elif search_query and document.headline_ocr_text %}
-                            <div class="small text-muted mt-1">OCR: {{ document.headline_ocr_text|search_highlight }}</div>
+                            <div class="small text-muted mt-1">Matched extracted text used to prefill metadata and search.</div>
                         {% elif document.description %}
                             <div class="small text-muted mt-1">{{ document.description|truncatechars:120 }}</div>
                         {% endif %}
                         {% if search_query and document.rank %}
                             <div class="small text-muted mt-1">Relevance {{ document.rank|floatformat:3 }}</div>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if document.processing_status == 'ready' %}
+                            <span class="badge text-bg-success">Ready</span>
+                        {% elif document.processing_status == 'processing' %}
+                            <span class="badge text-bg-info">Processing</span>
+                        {% else %}
+                            <span class="badge text-bg-danger">Failed</span>
                         {% endif %}
                     </td>
                     <td>{{ document.get_document_type_display }}</td>
@@ -124,7 +134,7 @@
                     </td>
                 </tr>
             {% empty %}
-                <tr><td colspan="10" class="text-center py-4">No documents found.</td></tr>
+                <tr><td colspan="11" class="text-center py-4">No documents found.</td></tr>
             {% endfor %}
             </tbody>
         </table>

@@ -11,14 +11,23 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+
   web:
     build: .
     env_file: .env
     environment:
       - DJANGO_ENV=production
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
     command: gunicorn dms_project.wsgi:application --bind 0.0.0.0:8000 --workers 3
     depends_on:
       - db
+      - redis
     volumes:
       - media_data:/app/media
       - static_data:/app/staticfiles
@@ -28,9 +37,14 @@ services:
   worker:
     build: .
     env_file: .env
-    command: python manage.py process_ocr_queue --loop
+    environment:
+      - DJANGO_ENV=production
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    command: python -m celery -A dms_project worker -l info
     depends_on:
       - db
+      - redis
     volumes:
       - media_data:/app/media
 
@@ -47,5 +61,6 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:
   media_data:
   static_data:

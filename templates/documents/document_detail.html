@@ -24,6 +24,42 @@
                 <p class="mb-0">{{ document.description|default:'No description provided.' }}</p>
             </div>
         </div>
+        <div class="card shadow-sm mt-4">
+            <div class="card-body">
+                <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-start gap-3">
+                    <div>
+                        <h2 class="h5 mb-1">File preview</h2>
+                        <p class="text-muted mb-0">Preview the uploaded file directly from this page.</p>
+                    </div>
+                    {% if document.file %}
+                        <a class="btn btn-outline-primary btn-sm" href="{{ document.file.url }}" target="_blank" rel="noopener">Open full file</a>
+                    {% endif %}
+                </div>
+                <div class="mt-3">
+                    {% if not document.file %}
+                        <p class="mb-0 text-muted">No uploaded file is available for preview.</p>
+                    {% elif file_preview_kind == 'pdf' %}
+                        <iframe
+                            src="{{ document.file.url }}#view=FitH"
+                            title="File preview for {{ document.title }}"
+                            class="w-100 rounded border"
+                            style="height: 640px;"
+                            loading="lazy"
+                        ></iframe>
+                    {% elif file_preview_kind == 'image' %}
+                        <img
+                            src="{{ document.file.url }}"
+                            alt="Preview of {{ document.title }}"
+                            class="img-fluid w-100 rounded border"
+                            style="max-height: 720px; object-fit: contain;"
+                            loading="lazy"
+                        >
+                    {% else %}
+                        <p class="mb-0 text-muted">This file type cannot be previewed inline yet. Use the file link to open it.</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
     </div>
     <div class="col-lg-4">
         <div class="card shadow-sm">
@@ -46,6 +82,8 @@
                             -
                         {% endif %}
                     </dd>
+                    <dt class="col-sm-5">Status</dt>
+                    <dd class="col-sm-7">{{ document.get_processing_status_display }}</dd>
                     <dt class="col-sm-5">OCR</dt>
                     <dd class="col-sm-7">{{ document.get_ocr_status_display }}</dd>
                     <dt class="col-sm-5">Extracted date</dt>
@@ -67,7 +105,13 @@
                     <dt class="col-sm-5">SHA256</dt>
                     <dd class="col-sm-7 text-break">{{ document.file_hash|default:'-' }}</dd>
                     <dt class="col-sm-5">File</dt>
-                    <dd class="col-sm-7"><a href="{{ document.file.url }}">Download</a></dd>
+                    <dd class="col-sm-7">
+                        {% if document.file %}
+                            <a href="{{ document.file.url }}">Download</a>
+                        {% else %}
+                            -
+                        {% endif %}
+                    </dd>
                 </dl>
             </div>
         </div>
@@ -76,13 +120,59 @@
 
 <div class="card shadow-sm mt-4">
     <div class="card-body">
-        <h2 class="h5">OCR Text</h2>
-        {% if document.ocr_text %}
-            <pre class="mb-0 document-pre">{{ document.ocr_text }}</pre>
+        <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-start gap-3">
+            <div>
+                <h2 class="h5 mb-1">OCR extraction</h2>
+                <p class="text-muted mb-0">OCR extracts text from the uploaded file, and optional AI analysis can turn that text and the first page into headings and prefilled metadata.</p>
+            </div>
+            {% if can_edit and document.ocr_status == 'completed' %}
+                <a class="btn btn-outline-primary btn-sm" href="{% url 'documents:edit_document' document.pk %}?prefill=1">Review metadata</a>
+            {% endif %}
+        </div>
+        {% if document.ocr_status == 'completed' %}
+            <dl class="row mb-0 mt-3">
+                <dt class="col-sm-4">Extraction source</dt>
+                <dd class="col-sm-8">
+                    {{ document.get_metadata_source_display }}
+                    {% if document.metadata_model %}
+                        <span class="text-muted">({{ document.metadata_model }})</span>
+                    {% endif %}
+                </dd>
+                <dt class="col-sm-4">Prefilled title</dt>
+                <dd class="col-sm-8">{{ document.title|default:'-' }}</dd>
+                <dt class="col-sm-4">Detected headings</dt>
+                <dd class="col-sm-8">
+                    {% if document.headings %}
+                        <ul class="mb-0 ps-3">
+                            {% for heading in document.headings %}
+                                <li>{{ heading }}</li>
+                            {% endfor %}
+                        </ul>
+                    {% else %}
+                        -
+                    {% endif %}
+                </dd>
+                <dt class="col-sm-4">Description summary</dt>
+                <dd class="col-sm-8">{{ document.description|default:'No summary extracted.' }}</dd>
+                <dt class="col-sm-4">Detected type</dt>
+                <dd class="col-sm-8">{{ document.get_document_type_display }}</dd>
+                <dt class="col-sm-4">Extracted date</dt>
+                <dd class="col-sm-8">{{ document.extracted_date|date:'Y-m-d'|default:'-' }}</dd>
+                <dt class="col-sm-4">Suggested tags</dt>
+                <dd class="col-sm-8">
+                    {% if document.tags.all %}
+                        {{ document.tags.all|join:', ' }}
+                    {% else %}
+                        -
+                    {% endif %}
+                </dd>
+            </dl>
+        {% elif document.processing_status == 'processing' %}
+            <p class="mb-0 mt-3 text-muted">OCR is processing in the background and will prefill the metadata when extraction finishes.</p>
         {% elif document.ocr_error %}
-            <p class="mb-0 text-muted">{{ document.ocr_error }}</p>
+            <p class="mb-0 mt-3 text-muted">{{ document.ocr_error }}</p>
         {% else %}
-            <p class="mb-0 text-muted">OCR text is not available yet.</p>
+            <p class="mb-0 mt-3 text-muted">OCR has not extracted metadata from this file yet.</p>
         {% endif %}
     </div>
 </div>

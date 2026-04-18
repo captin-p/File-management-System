@@ -117,6 +117,12 @@ def apply_file_metadata(document, uploaded_file, *, metadata=None):
     return metadata
 
 
+def apply_file_basics(document, uploaded_file):
+    document.original_filename = original_filename_from_upload(uploaded_file)
+    document.file_size = getattr(uploaded_file, 'size', None)
+    return document.original_filename, document.file_size
+
+
 def stored_file_metadata(document):
     if not document.file:
         raise ValidationError('Document has no stored file.')

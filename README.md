@@ -21,12 +21,15 @@ File-management-System/
 |   |-- management/
 |   |-- models.py
 |   |-- services.py
+|   |-- storage.py
+|   |-- tasks.py
 |   |-- tests.py
 |   |-- urls.py
 |   |-- utils.py
 |   |-- validators.py
 |   `-- views.py
 |-- dms_project/
+|   |-- celery.py
 |   |-- settings.py
 |   |-- urls.py
 |   `-- wsgi.py
@@ -48,21 +51,25 @@ File-management-System/
 
 - Login and logout with a custom `User` model built on `AbstractUser`
 - Company, department, unit, and role-aware users
+- Admin organization settings page for populating and extending department/unit options
 - UUID-based `Document` model
 - Upload PDF and image files up to 10 MB
 - Department and optional unit ownership for each document
 - Document type and tag metadata for faceted search
 - Local file storage under `media/storage/{department}/{year}/{document_type}/`
 - UUID file names with original filename, size, and SHA256 hash tracked in the database
-- Duplicate upload prevention by file hash
+- Background duplicate upload prevention by file hash
 - Paginated document list for responsive browsing
 - Archive browser by department, year, and document type
 - Search by title, description, and OCR text
 - Relevance-ranked PostgreSQL full-text search with highlighted matches
 - Role-based access by department scope
-- Upload-first OCR flow that scans files and pre-fills metadata for review
+- Upload-first OCR flow that queues processing and fills metadata after extraction
 - OCR metadata extraction for dates, document type, and keyword tags
-- Background OCR job queue for bulk imports and retry processing
+- Optional OpenAI metadata extraction for titles, headings, summaries, tags, and dates after OCR
+- Celery and Redis background processing for OCR and file hashing
+- Processing status tracking for queued, ready, and failed documents
+- Redis outage fallback that processes uploads inline when the broker is unavailable
 - Audit trail for document uploads, views, edits, deletes, and OCR processing
 - JSON API for document list and detail access
 - Materialized PostgreSQL full-text search index when PostgreSQL is enabled
@@ -84,15 +91,19 @@ The `Document` model includes:
 - `unit`
 - `tags`
 - `ocr_text`
+- `headings`
 - `extracted_date`
 - `search_vector` - PostgreSQL materialized full-text index field
+- `processing_status`
 - `ocr_status`
 - `ocr_error`
+- `metadata_source`
+- `metadata_model`
 - `uploaded_by`
 - `created_at`
 - `updated_at`
 
-OCR work is tracked in `OCRJob` records with queued, processing, completed, and failed states.
+Document processing is normally queued through Celery. `OCRJob` records remain available for explicit bulk/retry maintenance commands.
 
 Document activity is tracked in `AuditLog` records with actor, action, timestamp, IP address, user agent, and structured metadata.
 
@@ -104,9 +115,9 @@ New uploads are stored below `MEDIA_ROOT` with this layout:
 storage/{department}/{year}/{document_type}/{document_uuid}.{extension}
 ```
 
-The database keeps the original uploaded filename, byte size, and SHA256 hash. The upload form rejects files whose hash already exists, and the stored file is re-read after save or relocation to confirm size/hash integrity.
+The database keeps the original uploaded filename, byte size, and SHA256 hash. Hashing runs in the background task after upload; duplicate files are marked failed and the duplicate stored file is removed. The stored file is re-read after save or relocation to confirm size/hash integrity.
 
-If OCR changes the detected document type during upload, the file is automatically moved from the initial `other` folder into the final document type folder.
+If OCR changes the detected document type during processing, the file is automatically moved from the initial `other` folder into the final document type folder.
 
 ## Setup
 
@@ -123,11 +134,11 @@ If OCR changes the detected document type during upload, the file is automatical
    pip install -r requirements.txt
    ```
 
-3. Install OCR system packages on Linux:
+3. Install OCR and Redis system packages on Linux:
 
    ```bash
    sudo apt-get update
-   sudo apt-get install -y tesseract-ocr poppler-utils
+   sudo apt-get install -y tesseract-ocr poppler-utils redis-server
    ```
 
 4. Copy environment defaults:
@@ -145,7 +156,7 @@ If OCR changes the detected document type during upload, the file is automatical
    OCR_POPPLER_PATH=
    ```
 
-   The normal upload flow scans the file first and opens the metadata form with OCR suggestions.
+   The normal upload flow queues OCR/file hashing in the background and shows the processing status on the document page.
 
    On Windows, set `OCR_TESSERACT_CMD` if Tesseract is installed but not on PATH:
 
@@ -154,6 +165,19 @@ If OCR changes the detected document type during upload, the file is automatical
    ```
 
    PDF OCR also requires Poppler. Set `OCR_POPPLER_PATH` to the folder containing `pdftoppm` and `pdfinfo` when those commands are not on PATH.
+
+   To enable AI-assisted heading and metadata extraction after OCR, set:
+
+   ```env
+   OPENAI_API_KEY=
+   AI_METADATA_ENABLED=True
+   AI_METADATA_MODEL=gpt-4.1-mini
+   AI_METADATA_USE_IMAGE=True
+   AI_METADATA_MAX_OCR_CHARS=12000
+   AI_METADATA_MAX_HEADINGS=5
+   ```
+
+   The app sends OCR text and, when possible, a first-page image preview to the model. Requests are made with `store=False`, and the existing OCR heuristics remain the fallback when AI is disabled or unavailable.
 
 6. Run migrations:
 
@@ -173,19 +197,31 @@ If OCR changes the detected document type during upload, the file is automatical
    python manage.py createsuperuser
    ```
 
-9. Start the server:
+9. Start Redis if it is not already running:
+
+   ```bash
+   redis-server
+   ```
+
+10. Start the server:
 
    ```bash
    python manage.py runserver
    ```
 
-10. In a second terminal, start the OCR worker for queued bulk/retry jobs:
+11. In a second terminal, start the Celery worker:
 
    ```bash
-   python manage.py process_ocr_queue --loop
+   python -m celery -A dms_project worker -l info
    ```
 
-11. Open `http://127.0.0.1:8000/`.
+   On Windows, use the solo pool:
+
+   ```bash
+   python -m celery -A dms_project worker -l info --pool=solo
+   ```
+
+12. Open `http://127.0.0.1:8000/`.
 
 ## Organization Seed
 
@@ -196,6 +232,8 @@ python manage.py seed_organization --company-name "Main Company"
 ```
 
 The command is idempotent. It creates missing rows and leaves existing departments or units untouched.
+
+Admins can also open the dashboard and use `Organization settings` to populate the default departments and units for their assigned company, then add extra departments or units from the web interface.
 
 ## Database Configuration
 
@@ -238,13 +276,31 @@ Supported list query parameters:
 
 The API uses the same access scope as the HTML interface.
 
-## OCR Maintenance
+## Background Processing
 
-The upload page saves the file first, runs OCR, then opens the metadata form with suggested title, description, document type, extracted date, and tags. Save that form after review.
+The upload page saves the file first, queues a Celery task, and redirects to the document detail page. The background task hashes the stored file, rejects duplicates, runs OCR, extracts a date, suggests tags, updates document type/title/description when OCR provides useful text, and marks the document as `ready` or `failed`.
+
+If Redis is temporarily unavailable when a file is uploaded, the app falls back to inline processing for that upload so the system still works. Start Redis and the Celery worker again when available.
+
+Run a Celery worker:
+
+```bash
+python -m celery -A dms_project worker -l info
+```
+
+On Windows:
+
+```bash
+python -m celery -A dms_project worker -l info --pool=solo
+```
+
+## OCR Maintenance
 
 OCR date extraction supports common numeric and month-name dates such as `2026-04-13`, `13/04/2026`, `13 April 2026`, and `April 13, 2026`.
 
-Queued OCR jobs are available for bulk imports and retries.
+When AI metadata extraction is enabled, OCR still extracts the text first. The AI step then uses that OCR text and an optional first-page image preview to identify title-like headings, build a concise description, suggest tags, and capture an extracted date without exposing the full raw OCR dump in the main UI.
+
+The legacy database-backed OCR job commands remain available for bulk imports and retries.
 
 Run one batch of queued OCR jobs:
 
@@ -317,8 +373,8 @@ python manage.py rebuild_search_index --document-id <uuid>
 - Querysets use `select_related` for uploader and organizational data to reduce extra queries.
 - PostgreSQL search uses a materialized weighted `tsvector` column with a GIN index for fast OCR-backed searches.
 - SQLite development mode falls back to direct text filtering so the project remains easy to run locally.
-- OCR runs from a queue-backed worker process, so uploads do not block on expensive PDF/image extraction.
-- Database indexes are added on title, file hash, created time, uploader plus created time, department/unit plus created time, OCR status plus created time, and document type plus created time.
+- OCR and file hashing run from a Celery worker process, so uploads do not block on expensive PDF/image extraction when Redis is available.
+- Database indexes are added on title, file hash, created time, uploader plus created time, department/unit plus created time, OCR status plus created time, processing status plus created time, and document type plus created time.
 
 ## Access Rules
 

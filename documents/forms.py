@@ -3,7 +3,7 @@ from django import forms
 from accounts.models import Department, Unit
 
 from .models import DOC_TYPE_CHOICES, Document, OCRStatus, Tag
-from .storage import apply_file_metadata, calculate_file_metadata
+from .storage import apply_file_basics
 from .utils import (
     available_departments_for_user,
     available_units_for_user,
@@ -95,16 +95,7 @@ class DocumentUploadForm(OrganizationScopedFormMixin, forms.ModelForm):
         if not uploaded_file:
             return uploaded_file
 
-        metadata = calculate_file_metadata(uploaded_file)
-        self._file_metadata = metadata
-        self.instance.original_filename = metadata.original_filename
-        self.instance.file_size = metadata.file_size
-        self.instance.file_hash = metadata.file_hash
-
-        duplicate = Document.objects.filter(file_hash=metadata.file_hash).first()
-        if duplicate and duplicate.pk != self.instance.pk:
-            raise forms.ValidationError(f'This file was already uploaded as "{duplicate.title}".')
-
+        apply_file_basics(self.instance, uploaded_file)
         return uploaded_file
 
     def save(self, commit=True):
@@ -113,7 +104,7 @@ class DocumentUploadForm(OrganizationScopedFormMixin, forms.ModelForm):
         if uploaded_file and not document.title:
             document.title = uploaded_file.name.rsplit('.', 1)[0][:255] or 'Scanned document'
         if uploaded_file:
-            apply_file_metadata(document, uploaded_file, metadata=getattr(self, '_file_metadata', None))
+            apply_file_basics(document, uploaded_file)
         document.document_type = 'other'
         if commit:
             document.save()
@@ -158,7 +149,7 @@ class DocumentSearchForm(BootstrapFormMixin, forms.Form):
     q = forms.CharField(
         required=False,
         label='Search',
-        widget=forms.TextInput(attrs={'placeholder': 'Search by title, description, or OCR text'}),
+        widget=forms.TextInput(attrs={'placeholder': 'Search by title, description, or extracted text'}),
     )
     department = forms.ModelChoiceField(queryset=Department.objects.none(), required=False)
     unit = forms.ModelChoiceField(queryset=Unit.objects.none(), required=False)

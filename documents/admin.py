@@ -7,10 +7,10 @@ class TagAdmin(admin.ModelAdmin):
 
 @admin.register(Document)
 class DocumentAdmin(admin.ModelAdmin):
-    list_display = ('title', 'document_type', 'extracted_date', 'department', 'unit', 'ocr_status', 'original_filename', 'uploaded_by', 'created_at', 'updated_at')
-    list_filter = ('document_type', 'department', 'unit', 'ocr_status', 'extracted_date', 'created_at', 'updated_at')
+    list_display = ('title', 'processing_status', 'document_type', 'metadata_source', 'extracted_date', 'department', 'unit', 'ocr_status', 'original_filename', 'uploaded_by', 'created_at', 'updated_at')
+    list_filter = ('processing_status', 'document_type', 'metadata_source', 'department', 'unit', 'ocr_status', 'extracted_date', 'created_at', 'updated_at')
     search_fields = ('title', 'description', 'ocr_text', 'original_filename', 'file_hash', 'uploaded_by__username', 'department__name', 'unit__name', 'tags__name')
-    readonly_fields = ('id', 'original_filename', 'file_size', 'file_hash', 'created_at', 'updated_at', 'ocr_status', 'ocr_error')
+    readonly_fields = ('id', 'original_filename', 'file_size', 'file_hash', 'created_at', 'updated_at', 'ocr_status', 'ocr_error', 'metadata_source', 'metadata_model', 'headings')
     filter_horizontal = ('tags',)
 
 @admin.register(OCRJob)

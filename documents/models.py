@@ -8,7 +8,7 @@ from django.db.models import F, Q
 
 from accounts.models import Department, Unit
 
-from .storage import apply_file_metadata, document_file_upload_path
+from .storage import apply_file_basics, document_file_upload_path
 from .validators import validate_document_file
 
 
@@ -49,6 +49,17 @@ class OCRJobStatus(models.TextChoices):
     FAILED = 'failed', 'Failed'
 
 
+class DocumentProcessingStatus(models.TextChoices):
+    PROCESSING = 'processing', 'Processing'
+    READY = 'ready', 'Ready'
+    FAILED = 'failed', 'Failed'
+
+
+class MetadataSource(models.TextChoices):
+    HEURISTIC = 'heuristic', 'OCR heuristic'
+    AI = 'ai', 'AI extraction'
+
+
 class AuditAction(models.TextChoices):
     UPLOAD = 'upload', 'Upload'
     VIEW = 'view', 'View'
@@ -68,12 +79,17 @@ class DocumentQuerySet(models.QuerySet):
             'id',
             'title',
             'description',
+            'headings',
             'file',
             'original_filename',
             'file_size',
+            'file_hash',
             'created_at',
             'updated_at',
             'ocr_status',
+            'processing_status',
+            'metadata_source',
+            'metadata_model',
             'document_type',
             'extracted_date',
             'department__name',
@@ -167,6 +183,7 @@ class Document(models.Model):
     file_hash = models.CharField(max_length=64, blank=True, default='', db_index=True)
     document_type = models.CharField(max_length=20, choices=DOC_TYPE_CHOICES, default='other')
     ocr_text = models.TextField(blank=True)
+    headings = models.JSONField(default=list, blank=True)
     extracted_date = models.DateField(null=True, blank=True, db_index=True)
     search_vector = SearchVectorField(null=True, editable=False)
     ocr_status = models.CharField(
@@ -174,7 +191,19 @@ class Document(models.Model):
         choices=OCRStatus.choices,
         default=OCRStatus.PENDING,
     )
+    processing_status = models.CharField(
+        max_length=20,
+        choices=DocumentProcessingStatus.choices,
+        default=DocumentProcessingStatus.READY,
+        db_index=True,
+    )
     ocr_error = models.CharField(max_length=255, blank=True)
+    metadata_source = models.CharField(
+        max_length=20,
+        choices=MetadataSource.choices,
+        default=MetadataSource.HEURISTIC,
+    )
+    metadata_model = models.CharField(max_length=100, blank=True, default='')
     department = models.ForeignKey(
         Department,
         on_delete=models.PROTECT,
@@ -209,6 +238,7 @@ class Document(models.Model):
             models.Index(fields=['department', 'created_at']),
             models.Index(fields=['unit', 'created_at']),
             models.Index(fields=['ocr_status', 'created_at']),
+            models.Index(fields=['processing_status', 'created_at']),
             models.Index(fields=['document_type', 'created_at']),
             models.Index(fields=['extracted_date', 'created_at']),
         ]
@@ -241,10 +271,10 @@ class Document(models.Model):
 
     def save(self, *args, **kwargs):
         if self.file and self._file_changed():
-            apply_file_metadata(self, self.file)
+            apply_file_basics(self, self.file)
             update_fields = kwargs.get('update_fields')
             if update_fields is not None:
-                kwargs['update_fields'] = set(update_fields) | {'original_filename', 'file_size', 'file_hash'}
+                kwargs['update_fields'] = set(update_fields) | {'original_filename', 'file_size'}
         super().save(*args, **kwargs)
 
 
